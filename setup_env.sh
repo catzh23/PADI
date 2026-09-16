@@ -12,6 +12,9 @@ MAVEN_VERSION=3.8.4
 PROTOC_VERSION=3.12.0
 INSTALL_DIR="$(pwd)/dev_env"
 
+# Enforce code formatting on commit (see .githooks/pre-commit)
+git config core.hooksPath .githooks
+
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Rejects the commit if any staged Java file is not formatted per Spotless (google-java-format).
+# Enable once per clone: git config core.hooksPath .githooks
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR -- '*.java')
+[ ${#files[@]} -eq 0 ] && exit 0
+
+if ! command -v mvn >/dev/null 2>&1 && [ -f dev_env/env.sh ]; then
+	source dev_env/env.sh
+fi
+
+# Restrict the check to the staged files (Spotless matches these regexes against absolute paths).
+patterns=""
+for f in "${files[@]}"; do
+	patterns+="\\Q$root/$f\\E,"
+done
+
+if ! mvn -q -N spotless:check -DspotlessFiles="${patterns%,}"; then
+	echo >&2
+	echo "❌ Commit rejected: staged Java files are not formatted." >&2
+	echo "   Run 'mvn -N spotless:apply', re-stage the files and commit again." >&2
+	exit 1
+fi

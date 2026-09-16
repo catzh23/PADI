@@ -31,6 +31,15 @@ Students may extend this script for their target distribution/CPU architecture.
 If so, it will keep all required packages in `INSTALL_DIR`, which can be activated by running
 `source INSTALL_DIR/env.sh`.
 
+# Formatting
+
+Java sources are formatted with [google-java-format](https://github.com/google/google-java-format) via Spotless.
+Commits containing unformatted Java files are rejected by the pre-commit hook in `.githooks/`.
+
+- Enable the hook once per clone (done by `setup_env.sh`): `git config core.hooksPath .githooks`
+- Format the code: `mvn -N spotless:apply`
+- Check without changing files: `mvn -N spotless:check`
+
 # Compiling
 
 To compile the project, students must run the command

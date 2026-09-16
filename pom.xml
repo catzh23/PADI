@@ -22,4 +22,35 @@
 		<module>server</module>
 	</modules>
 
+	<properties>
+		<version.spotless-maven-plugin>2.46.1</version.spotless-maven-plugin>
+		<version.google-java-format>1.28.0</version.google-java-format>
+	</properties>
+
+	<build>
+		<plugins>
+			<!-- Code formatter. Run from the root directory:
+				mvn -N spotless:apply   (format all Java sources)
+				mvn -N spotless:check   (fail if anything is unformatted)
+				Enforced on commit by .githooks/pre-commit. -->
+			<plugin>
+				<groupId>com.diffplug.spotless</groupId>
+				<artifactId>spotless-maven-plugin</artifactId>
+				<version>${version.spotless-maven-plugin}</version>
+				<configuration>
+					<java>
+						<includes>
+							<include>*/src/main/java/**/*.java</include>
+							<include>*/src/test/java/**/*.java</include>
+						</includes>
+						<googleJavaFormat>
+							<version>${version.google-java-format}</version>
+						</googleJavaFormat>
+						<removeUnusedImports />
+					</java>
+				</configuration>
+			</plugin>
+		</plugins>
+	</build>
+
 </project>
