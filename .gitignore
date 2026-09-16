@@ -21,6 +21,7 @@ buildNumber.properties
 hs_err_pid*
 replay_pid*
 *.log
+logs/
 
 # Local toolchain installed by setup_env.sh
 dev_env/
