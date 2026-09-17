@@ -3,6 +3,7 @@ package didatrade.server;
 import io.grpc.BindableService;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
+import io.grpc.ServerInterceptors;
 
 public class DidaTradeServer {
 
@@ -43,9 +44,9 @@ public class DidaTradeServer {
     // Create a new server to listen on port.
     Server server =
         ServerBuilder.forPort(port)
-            .addService(service_impl)
+            .addService(ServerInterceptors.intercept(service_impl, server_state.debug_interceptor))
             .addService(master_impl)
-            .addService(paxos_impl)
+            .addService(ServerInterceptors.intercept(paxos_impl, server_state.debug_interceptor))
             .build();
     // Start the server.
     server.start();

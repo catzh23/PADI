@@ -1,5 +1,6 @@
 package didatrade.server;
 
+import didatrade.DebugInterceptor;
 import didatrade.DidaTradeMaster;
 import didatrade.DidaTradeMasterServiceGrpc;
 import io.grpc.stub.StreamObserver;
@@ -89,11 +90,31 @@ public class DidaTradeMasterServiceImpl
       StreamObserver<DidaTradeMaster.SetDebugReply> responseObserver) {
     // for debug purposes
     System.out.println(request);
-
+    int request_id = request.getReqid();
+    int mode = request.getMode();
     boolean response_value = true;
 
-    int request_id = request.getReqid();
-    this.server_state.setDebugMode(request.getMode());
+    switch (mode) {
+      case DebugInterceptor.FAIL:
+        break; // exits below, after the reply is sent
+      case DebugInterceptor.FREEZE:
+        this.server_state.debug_interceptor.freeze();
+        break;
+      case DebugInterceptor.UNFREEZE:
+        this.server_state.debug_interceptor.unfreeze();
+        break;
+      case DebugInterceptor.SLOW:
+        this.server_state.debug_interceptor.setSlow(true);
+        break;
+      case DebugInterceptor.FAST:
+        this.server_state.debug_interceptor.setSlow(false);
+        break;
+      default:
+        response_value = false;
+        break;
+    }
+
+    if (response_value) this.server_state.setDebugMode(mode);
 
     // for debug purposes
     System.out.println("Setting debug mode to = " + this.server_state.getDebugMode());
@@ -106,5 +127,16 @@ public class DidaTradeMasterServiceImpl
     DidaTradeMaster.SetDebugReply response = response_builder.build();
     responseObserver.onNext(response);
     responseObserver.onCompleted();
+    if (mode == DebugInterceptor.FAIL) {
+      new Thread(
+              () -> {
+                try {
+                  Thread.sleep(200); // let the reply reach the console
+                } catch (InterruptedException e) {
+                }
+                System.exit(1);
+              })
+          .start();
+    }
   }
 }

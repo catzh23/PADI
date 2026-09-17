@@ -1,5 +1,6 @@
 package didatrade.server;
 
+import didatrade.DebugInterceptor;
 import didatrade.DidaTradePaxosServiceGrpc;
 import didatrade.configs.*;
 import didatrade.configs.ConfigurationScheduler;
@@ -23,6 +24,7 @@ public class DidaTradeServerState {
   String[] targets;
   ManagedChannel[] channels;
   DidaTradePaxosServiceGrpc.DidaTradePaxosServiceStub[] async_stubs;
+  DebugInterceptor debug_interceptor;
 
   private int current_ballot;
   private int completed_ballot;
@@ -37,6 +39,7 @@ public class DidaTradeServerState {
     this.scheduler = new ConfigurationScheduler(schedule);
     this.base_port = port;
     this.my_id = myself;
+    this.debug_interceptor = new DebugInterceptor();
     this.debug_mode = 0;
     this.fastpaxos_on = false;
     this.current_ballot = 0;
