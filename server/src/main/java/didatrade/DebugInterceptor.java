@@ -8,12 +8,6 @@ import java.util.concurrent.ThreadLocalRandom;
 
 public class DebugInterceptor implements ServerInterceptor {
 
-  public static final int FAIL = 1;
-  public static final int FREEZE = 2;
-  public static final int UNFREEZE = 3;
-  public static final int SLOW = 4;
-  public static final int FAST = 5;
-
   private static final int SLOW_MIN_DELAY_MS = 500;
   private static final int SLOW_MAX_DELAY_MS = 4000;
 

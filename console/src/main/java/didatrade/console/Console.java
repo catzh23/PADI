@@ -98,7 +98,7 @@ public class Console {
         case "help":
           System.out.println("\thelp");
           System.out.println("\tballot number replica");
-          System.out.println("\tdebug mode replica");
+          System.out.println("\tdebug <" + DebugMode.USAGE + "|1-5> replica");
           System.out.println("\texit");
           break;
         case "ballot":
@@ -228,9 +228,14 @@ public class Console {
           System.out.println("debug " + parameter1 + " " + parameter2);
           if ((parameter1 != null) && (parameter2 != null)) {
             try {
-              mode = Integer.parseInt(parameter1);
+              mode = DebugMode.parse(parameter1);
               replica = Integer.parseInt(parameter2);
-              System.out.println("setting debug with mode " + mode + " on replica " + replica);
+              if (mode < 0) {
+                System.out.println("usage: debug <" + DebugMode.USAGE + "> replica");
+                break;
+              }
+              System.out.println(
+                  "setting debug " + DebugMode.name(mode) + " on replica " + replica);
 
               sequence_number = sequence_number + 1;
               int reqid = sequence_number * 100 + client_id;
@@ -256,10 +261,10 @@ public class Console {
                 System.out.println("reply = " + setdebug_reply.getAck());
               } else System.out.println("no reply received");
             } catch (NumberFormatException e) {
-              System.out.println("usage: debug mode replica");
+              System.out.println("usage: debug <" + DebugMode.USAGE + "> replica");
             }
           } else {
-            System.out.println("usage: debug mode replica");
+            System.out.println("usage: debug <" + DebugMode.USAGE + "> replica");
           }
           break;
         case "exit":

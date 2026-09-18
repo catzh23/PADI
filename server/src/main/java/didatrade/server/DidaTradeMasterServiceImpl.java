@@ -1,8 +1,8 @@
 package didatrade.server;
 
-import didatrade.DebugInterceptor;
 import didatrade.DidaTradeMaster;
 import didatrade.DidaTradeMasterServiceGrpc;
+import didatrade.util.DebugMode;
 import io.grpc.stub.StreamObserver;
 
 public class DidaTradeMasterServiceImpl
@@ -95,18 +95,18 @@ public class DidaTradeMasterServiceImpl
     boolean response_value = true;
 
     switch (mode) {
-      case DebugInterceptor.FAIL:
+      case DebugMode.FAIL:
         break; // exits below, after the reply is sent
-      case DebugInterceptor.FREEZE:
+      case DebugMode.FREEZE:
         this.server_state.debug_interceptor.freeze();
         break;
-      case DebugInterceptor.UNFREEZE:
+      case DebugMode.UNFREEZE:
         this.server_state.debug_interceptor.unfreeze();
         break;
-      case DebugInterceptor.SLOW:
+      case DebugMode.SLOW:
         this.server_state.debug_interceptor.setSlow(true);
         break;
-      case DebugInterceptor.FAST:
+      case DebugMode.FAST:
         this.server_state.debug_interceptor.setSlow(false);
         break;
       default:
@@ -117,7 +117,8 @@ public class DidaTradeMasterServiceImpl
     if (response_value) this.server_state.setDebugMode(mode);
 
     // for debug purposes
-    System.out.println("Setting debug mode to = " + this.server_state.getDebugMode());
+    System.out.println(
+        "Setting debug mode to = " + DebugMode.name(this.server_state.getDebugMode()));
 
     DidaTradeMaster.SetDebugReply.Builder response_builder =
         DidaTradeMaster.SetDebugReply.newBuilder();
@@ -127,7 +128,7 @@ public class DidaTradeMasterServiceImpl
     DidaTradeMaster.SetDebugReply response = response_builder.build();
     responseObserver.onNext(response);
     responseObserver.onCompleted();
-    if (mode == DebugInterceptor.FAIL) {
+    if (mode == DebugMode.FAIL) {
       new Thread(
               () -> {
                 try {
