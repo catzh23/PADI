@@ -54,3 +54,6 @@ nbdist/
 Thumbs.db
 *~
 *.swp
+
+# demo harness output
+demo/run/

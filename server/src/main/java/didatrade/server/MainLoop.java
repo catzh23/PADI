@@ -4,7 +4,7 @@ import didatrade.DidaTradePaxos;
 import didatrade.DidaTradePaxosServiceGrpc;
 import didatrade.util.CollectorStreamObserver;
 import didatrade.util.GenericResponseCollector;
-import didatrade.util.PhaseOneBogusProcessor;
+import didatrade.util.PhaseOneProcessor;
 import didatrade.util.PhaseTwoResponseProcessor;
 import io.grpc.ManagedChannel;
 import java.util.*;
@@ -75,10 +75,8 @@ public class MainLoop implements Runnable {
         int low_ballot = Math.max(completed_ballot, 0);
         int high_ballot = ballot;
 
-        // PhaseOneResponseProcessor phase_one_processor = new
-        // PhaseOneResponseProcessor(this.server_state.scheduler, low_ballot, high_ballot);
-        PhaseOneBogusProcessor phase_one_processor =
-            new PhaseOneBogusProcessor(this.server_state.scheduler, low_ballot, high_ballot);
+        PhaseOneProcessor phase_one_processor =
+            PhaseOneProcessor.create(this.server_state.scheduler, low_ballot, high_ballot);
 
         ArrayList<DidaTradePaxos.PhaseOneReply> phase_one_responses =
             new ArrayList<DidaTradePaxos.PhaseOneReply>();
