@@ -28,6 +28,9 @@ public class DidaTradeServerState {
 
   private int current_ballot;
   private int completed_ballot;
+  /* Ballot of the last accepted phase 1 proposed by this server */
+  private int last_accepted_ballot;
+
   private int debug_mode;
   private boolean fastpaxos_on;
 
@@ -44,6 +47,7 @@ public class DidaTradeServerState {
     this.fastpaxos_on = false;
     this.current_ballot = 0;
     this.completed_ballot = -1;
+    this.last_accepted_ballot = -1;
     this.req_history = new RequestHistory();
     this.paxos_log = new PaxosLog();
     this.main_loop = new MainLoop(this);
@@ -123,6 +127,14 @@ public class DidaTradeServerState {
       }
     }
     return this.completed_ballot;
+  }
+
+  public synchronized int getLastAcceptedBallot() {
+    return this.last_accepted_ballot;
+  }
+
+  public synchronized void setLastAcceptedBallot(int ballot) {
+    this.last_accepted_ballot = ballot;
   }
 
   public synchronized boolean getFastPaxosMode() {

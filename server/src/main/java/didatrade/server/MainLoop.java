@@ -60,54 +60,58 @@ public class MainLoop implements Runnable {
         int phase_one_readballot = -1;
         int phase_two_value = request_record.getId();
 
-        // Paxos Phase One
-        System.out.println("Going to run paxos phase 1");
+        if (this.server_state.getLastAcceptedBallot() != ballot) {
+          // Paxos Phase One
+          System.out.println("Going to run paxos phase 1");
 
-        // send phase1
-        DidaTradePaxos.PhaseOneRequest.Builder phase_one_request_builder =
-            DidaTradePaxos.PhaseOneRequest.newBuilder();
-        phase_one_request_builder.setInstance(entry_number);
-        phase_one_request_builder.setRequestballot(ballot);
+          // send phase1
+          DidaTradePaxos.PhaseOneRequest.Builder phase_one_request_builder =
+              DidaTradePaxos.PhaseOneRequest.newBuilder();
+          phase_one_request_builder.setInstance(entry_number);
+          phase_one_request_builder.setRequestballot(ballot);
 
-        DidaTradePaxos.PhaseOneRequest phase_one_request = phase_one_request_builder.build();
-        System.out.println("Going to send phase 1" + phase_one_request);
+          DidaTradePaxos.PhaseOneRequest phase_one_request = phase_one_request_builder.build();
+          System.out.println("Going to send phase 1" + phase_one_request);
 
-        int low_ballot = Math.max(completed_ballot, 0);
-        int high_ballot = ballot;
+          int low_ballot = Math.max(completed_ballot, 0);
+          int high_ballot = ballot;
 
-        PhaseOneProcessor phase_one_processor =
-            PhaseOneProcessor.create(this.server_state.scheduler, low_ballot, high_ballot);
+          PhaseOneProcessor phase_one_processor =
+              PhaseOneProcessor.create(this.server_state.scheduler, low_ballot, high_ballot);
 
-        ArrayList<DidaTradePaxos.PhaseOneReply> phase_one_responses =
-            new ArrayList<DidaTradePaxos.PhaseOneReply>();
-        GenericResponseCollector<DidaTradePaxos.PhaseOneReply> phase_one_collector =
-            new GenericResponseCollector<DidaTradePaxos.PhaseOneReply>(
-                phase_one_responses, n_acceptors, phase_one_processor);
+          ArrayList<DidaTradePaxos.PhaseOneReply> phase_one_responses =
+              new ArrayList<DidaTradePaxos.PhaseOneReply>();
+          GenericResponseCollector<DidaTradePaxos.PhaseOneReply> phase_one_collector =
+              new GenericResponseCollector<DidaTradePaxos.PhaseOneReply>(
+                  phase_one_responses, n_acceptors, phase_one_processor);
 
-        for (int i = 0; i < n_acceptors; i++) {
-          CollectorStreamObserver<DidaTradePaxos.PhaseOneReply> phase_one_observer =
-              new CollectorStreamObserver<DidaTradePaxos.PhaseOneReply>(phase_one_collector);
-          this.server_state.async_stubs[acceptors.get(i)].phaseone(
-              phase_one_request, phase_one_observer);
+          for (int i = 0; i < n_acceptors; i++) {
+            CollectorStreamObserver<DidaTradePaxos.PhaseOneReply> phase_one_observer =
+                new CollectorStreamObserver<DidaTradePaxos.PhaseOneReply>(phase_one_collector);
+            this.server_state.async_stubs[acceptors.get(i)].phaseone(
+                phase_one_request, phase_one_observer);
+          }
+
+          phase_one_collector.waitUntilDone();
+          if (phase_one_processor.getAccepted() == false) {
+            ballot_aborted = true;
+            int maxballot = phase_one_processor.getMaxballot();
+            if (maxballot > this.server_state.getCurrentBallot())
+              this.server_state.setCurrentBallot(maxballot);
+          } else if (phase_one_processor.getValballot() > -1)
+            phase_two_value = phase_one_processor.getValue();
+
+          // Update last accepted ballot if phase 1 was successful
+          if (ballot_aborted == false) this.server_state.setLastAcceptedBallot(ballot);
+
+          System.out.println(
+              "Paxos phase 1 ended with aborted = "
+                  + ballot_aborted
+                  + " and read ballot = "
+                  + phase_one_processor.getValballot()
+                  + " and value "
+                  + phase_two_value);
         }
-
-        phase_one_collector.waitUntilDone();
-        if (phase_one_processor.getAccepted() == false) {
-          ballot_aborted = true;
-          int maxballot = phase_one_processor.getMaxballot();
-          if (maxballot > this.server_state.getCurrentBallot())
-            this.server_state.setCurrentBallot(maxballot);
-        } else if (phase_one_processor.getValballot() > -1)
-          phase_two_value = phase_one_processor.getValue();
-
-        System.out.println(
-            "Paxos phase 1 ended with aborted = "
-                + ballot_aborted
-                + " and read ballot = "
-                + phase_one_processor.getValballot()
-                + " and value "
-                + phase_two_value);
-
         // Paxos Phase Two
         if (ballot_aborted == false) {
           System.out.println("Going to run paxos phase 2");
