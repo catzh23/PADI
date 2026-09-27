@@ -4,30 +4,19 @@
 syntax = "proto3";
 package didatrade;
 
-// Multi-Paxos: one phase 1 covers every instance from 'frominstance' onwards, not just one.
 message PhaseOneRequest {
-  int32 frominstance    = 1;
+  int32 instance        = 1;
   int32 requestballot	= 2;
 }
 
-// One instance the acceptor has already accepted a value for, carried back by phase 1.
-message AcceptedInstance {
-  int32 instance        = 1;
-  int32 value           = 2;
-  int32 valballot       = 3;
-}
-
-// 'acceptedinstances' holds every instance >= frominstance this acceptor has accepted a
-// value for. Empty means it accepted nothing there, so the leader may propose its own
-// values. Single-instance value/valballot (old fields 5 and 6) are now per entry inside
-// AcceptedInstance.
 message PhaseOneReply {
-  int32 frominstance    = 1;
+  int32 instance        = 1;
   int32 serverid        = 2;
   int32 requestballot	= 3;
   bool  accepted 	= 4;
+  int32 value           = 5;
+  int32 valballot       = 6;
   int32 maxballot       = 7;
-  repeated AcceptedInstance acceptedinstances = 8;
 }
 
 message PhaseTwoRequest {
