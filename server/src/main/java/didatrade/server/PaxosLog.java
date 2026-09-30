@@ -1,6 +1,9 @@
 package didatrade.server;
 
+import didatrade.DidaTradePaxos;
+import java.util.ArrayList;
 import java.util.Hashtable;
+import java.util.List;
 
 public class PaxosLog {
   private Hashtable<Integer, PaxosInstance> log;
@@ -11,6 +14,22 @@ public class PaxosLog {
 
   public synchronized int length() {
     return this.log.size();
+  }
+
+  /** Caller holds server_state's monitor, also used by acceptors when writing. */
+  public synchronized List<DidaTradePaxos.AcceptedInstance> acceptedInstances(int firstInstance) {
+    List<DidaTradePaxos.AcceptedInstance> entries = new ArrayList<>();
+    for (PaxosInstance entry : this.log.values()) {
+      if (entry.instance_nb >= firstInstance && entry.write_ballot >= 0) {
+        entries.add(
+            DidaTradePaxos.AcceptedInstance.newBuilder()
+                .setInstance(entry.instance_nb)
+                .setValue(entry.accepted_value)
+                .setValballot(entry.write_ballot)
+                .build());
+      }
+    }
+    return entries;
   }
 
   public synchronized PaxosInstance getEntry(int position) {

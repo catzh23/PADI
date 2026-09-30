@@ -61,4 +61,8 @@ public class GenericResponseCollector<T> {
       }
     }
   }
+
+  public synchronized boolean isDone() {
+    return this.done;
+  }
 }

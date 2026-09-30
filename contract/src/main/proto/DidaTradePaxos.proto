@@ -5,8 +5,16 @@ syntax = "proto3";
 package didatrade;
 
 message PhaseOneRequest {
+  // First unexecuted slot of the proposer; return accepted slots >= instance.
+  // The promise still covers all instances, including future ones.
   int32 instance        = 1;
   int32 requestballot	= 2;
+}
+
+message AcceptedInstance {
+  int32 instance = 1;
+  int32 value = 2;
+  int32 valballot = 3;
 }
 
 message PhaseOneReply {
@@ -17,6 +25,8 @@ message PhaseOneReply {
   int32 value           = 5;
   int32 valballot       = 6;
   int32 maxballot       = 7;
+  // Complete snapshot of accepted slots >= the requested instance (no upper bound).
+  repeated AcceptedInstance acceptedinstances = 8;
 }
 
 message PhaseTwoRequest {
@@ -37,6 +47,7 @@ message LearnRequest {
   int32 instance   = 1;
   int32 ballot     = 2;
   int32 value      = 3;
+  int32 serverid   = 4;
 }
 
 message LearnReply {

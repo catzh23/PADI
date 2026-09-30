@@ -3,6 +3,8 @@ package didatrade.util;
 import didatrade.DidaTradePaxos;
 import didatrade.configs.ConfigurationScheduler;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 
 public class PhaseOneBogusProcessor extends PhaseOneProcessor {
   private ConfigurationScheduler scheduler;
@@ -12,6 +14,7 @@ public class PhaseOneBogusProcessor extends PhaseOneProcessor {
   private int maxballot;
   private int low_ballot;
   private int high_ballot;
+  private final Map<Integer, DidaTradePaxos.AcceptedInstance> acceptedInstances = new HashMap<>();
 
   public PhaseOneBogusProcessor(ConfigurationScheduler s, int l, int h) {
     // Defect 1. Stored true, never reassigned. Rejected ballot still report accepted.
@@ -45,6 +48,11 @@ public class PhaseOneBogusProcessor extends PhaseOneProcessor {
   }
 
   @Override
+  public synchronized Map<Integer, DidaTradePaxos.AcceptedInstance> getAcceptedInstances() {
+    return Map.copyOf(this.acceptedInstances);
+  }
+
+  @Override
   public synchronized boolean onNext(
       ArrayList<DidaTradePaxos.PhaseOneReply> all_responses,
       DidaTradePaxos.PhaseOneReply last_response) {
@@ -53,6 +61,10 @@ public class PhaseOneBogusProcessor extends PhaseOneProcessor {
     this.maxballot = last_response.getMaxballot();
     this.value = last_response.getValue();
     this.valballot = last_response.getValballot();
+    this.acceptedInstances.clear();
+    for (DidaTradePaxos.AcceptedInstance entry : last_response.getAcceptedinstancesList()) {
+      this.acceptedInstances.put(entry.getInstance(), entry);
+    }
     // Defect 3. Done after one reply. Never wait quorum.
     return true;
   }

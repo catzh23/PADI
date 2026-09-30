@@ -1,107 +1,85 @@
 #!/usr/bin/env bash
-set -uo pipefail
-
+set -euo pipefail
 MODE="${1:-bogus}"
 case "$MODE" in
-bogus) export JAVA_FLAGS="-Ddidatrade.phase1=bogus" ;;
-fixed) export JAVA_FLAGS="" ;;
-*)
-	echo "usage: $0 [bogus|fixed]" >&2
-	exit 2
-	;;
+  bogus) JAVA_FLAGS="-Ddidatrade.phase1=bogus" ;;
+  fixed) JAVA_FLAGS="" ;;
+  *) echo "usage: $0 [bogus|fixed]" >&2; exit 2 ;;
 esac
-
 source "$(dirname "$0")/lab.sh"
-
-step() { printf '\n\033[1m>>> %s\033[0m\n' "$*"; }
-
-trap 'lab_stop' EXIT
-lab_stop
-sleep 1
+trap lab_stop EXIT
 lab_init
 
-step "mode: $MODE (JAVA_FLAGS='${JAVA_FLAGS}')"
-step "starting 3 servers (Schedule A, ballot 0 -> leader S0), 2 clients, console"
-for i in 0 1 2; do start_server $i; done
-sleep 4
+printf '\n[1] Start three replicas and decide request 101 at slot 0.\n'
+for id in 0 1 2; do start_server "$id"; done
 start_app 1
 start_app 2
 start_console
-sleep 4
-
-step "[1] client 1 sells. This is log slot 0, decided by all three at ballot 0."
-app 1 "sell 0 50"
-sleep 4
-
-step "[2] crash S1 and restart it. It comes back with an EMPTY Paxos log:"
-step "    nothing in the baseline transfers past decisions to a restarted replica."
-console "debug crash 1"
-sleep 3
-start_server 1
-sleep 4
-
-step "[3] slow S0 and S2 so the restarted S1 wins the phase-1 reply race."
-step "    (bogus phase 1 stops at the FIRST reply, so whoever answers first decides.)"
-console "debug slow-mode-on 0"
-sleep 1
-console "debug slow-mode-on 2"
-sleep 1
-
-step "[4] hand leadership of ballot 1 to S1."
-console "ballot 1 1"
-sleep 3
-
-step "[5] client 2 sells. S1 proposes it for ITS slot 0 -- the slot already holding V1."
-app 2 "sell 3 50"
-sleep 12
-
-console "debug slow-mode-off 0"
-sleep 1
-console "debug slow-mode-off 2"
-sleep 2
-app 1 "show"
-sleep 5
-
-app 1 "exit"
-app 2 "exit"
-console "exit"
-sleep 1
-lab_stop
-sleep 1
-
-# ---------------------------------------------------------------- verdict
-slot0() { grep -m1 "Log entry with number 0 has been decided" "$RUN/s$1.log" | grep -o '[0-9]*$'; }
-V0=$(slot0 0)
-V1=$(slot0 1)
-V2=$(slot0 2)
-
-printf '\n\033[1m================ RESULT (%s) ================\033[0m\n' "$MODE"
-printf 'command executed at log slot 0:\n'
-printf '  S0 -> %s\n  S1 -> %s\n  S2 -> %s\n' "${V0:-none}" "${V1:-none}" "${V2:-none}"
-printf '\nS1 phase 1 for slot 0:\n  '
-grep -m1 "Paxos phase 1 ended" "$RUN/s1.log" | tail -1
-printf '\nstate machine effects:\n'
-for i in 0 1 2; do
-	printf '  S%s: %s\n' "$i" "$(grep -o 'in sell for user [0-9]*' "$RUN/s$i.log" | tr '\n' ';')"
+app 1 'sell 0 50'
+for id in 0 1 2; do
+  wait_log "s$id" 'Log entry with number 0 has been decided with command id = 101'
 done
-printf '\n'
 
-if [ "$MODE" = "bogus" ]; then
-	if [ -n "${V0:-}" ] && [ -n "${V1:-}" ] && [ "$V0" != "$V1" ]; then
-		printf '\033[31mSAFETY VIOLATED (as expected on the baseline)\033[0m\n'
-		printf 'S0 and S1 applied different commands at slot 0. A correct phase 1 would have read\n'
-		printf 'a quorum (2 of 3), necessarily including S0 or S2, seen valballot=0 / value=%s,\n' "$V0"
-		printf 'and been FORCED to re-propose it.\n'
-		exit 0
-	fi
-	printf 'Did not reproduce this run (timing). Re-run; logs in %s\n' "$RUN"
-	exit 1
-else
-	if [ -n "${V0:-}" ] && [ "$V0" = "${V1:-}" ] && [ "$V0" = "${V2:-}" ]; then
-		printf '\033[32mSAFETY HELD\033[0m: all three replicas applied %s at slot 0.\n' "$V0"
-		printf 'S1 phase 1 read a quorum, recovered the value accepted at ballot 0, and re-proposed it.\n'
-		exit 0
-	fi
-	printf '\033[31mREGRESSION\033[0m: replicas disagree at slot 0 with the fix in. Logs in %s\n' "$RUN"
-	exit 1
+printf '\n[2] Crash and restart S1 with an empty log.\n'
+console 'debug crash 1'
+wait_log s1 'Setting debug mode to = crash'
+end=$((SECONDS + 15))
+while kill -0 "${PIDS[s1]}" 2>/dev/null; do
+  if (( SECONDS >= end )); then echo 'S1 did not crash' >&2; exit 1; fi
+  sleep 0.1
+done
+wait "${PIDS[s1]}" 2>/dev/null || true
+unset 'PIDS[s1]'
+mv "$RUN/s1.log" "$RUN/s1-before-restart.log"
+start_server 1
+# New connections avoid racing the old channel's reconnect backoff after the crash.
+stop_process console
+mv "$RUN/console.log" "$RUN/console-before-restart.log"
+start_console
+
+printf '\n[3] Freeze S0/S2: only the empty S1 can answer prepare immediately.\n'
+console 'debug freeze 0'
+wait_log s0 'Setting debug mode to = freeze'
+console 'debug freeze 2'
+wait_log s2 'Setting debug mode to = freeze'
+console 'ballot 1 1'
+wait_log s1 'new ballot = 1'
+wait_log s1 'Going to run paxos phase 1 for ballot 1'
+
+if [[ "$MODE" == bogus ]]; then
+  wait_log s1 'using the BOGUS processor'
+  wait_log s1 'Multi-prepare completed for ballot 1; recovered slots = \[\]'
 fi
+printf '\n[4] Send request 102. The old decision at slot 0 must remain 101.\n'
+app 2 'sell 3 50'
+wait_log s1 'Adding sell request with reqid 102 to pending'
+if [[ "$MODE" == bogus ]]; then
+  wait_log s1 'Sending phase 2 for slot 0 in ballot 1, value 102'
+else
+  if grep -q 'Multi-prepare completed for ballot 1' "$RUN/s1.log"; then
+    echo 'FAIL: fixed prepare completed while only one acceptor could respond' >&2
+    exit 1
+  fi
+  echo 'PASS: fixed prepare is still waiting for a majority.'
+fi
+
+printf '\n[5] Unfreeze the surviving acceptors and inspect the decision.\n'
+console 'debug un-freeze 0'
+wait_log s0 'Setting debug mode to = un-freeze'
+console 'debug un-freeze 2'
+wait_log s2 'Setting debug mode to = un-freeze'
+if [[ "$MODE" == bogus ]]; then
+  wait_log s1 'Log entry with number 0 has been decided with command id = 102'
+  printf '\nPASS: baseline defect reproduced. Slot 0 executed as 101 on S0/S2 and 102 on restarted S1.\n'
+else
+  wait_log s1 'Multi-prepare completed for ballot 1'
+  wait_log s1 'Sending phase 2 for slot 0 in ballot 1, value 101'
+  wait_log s1 'Phase 2 chose slot 0 in ballot 1|Paxos learner decided slot 0 in ballot 1, value 101'
+  if grep -Eq 'Sending phase 2 for slot 0 in ballot 1, value 102|Log entry with number 0 has been decided with command id = 102' "$RUN/s1.log"; then
+    echo 'FAIL: fixed mode replaced the old value' >&2
+    exit 1
+  fi
+  printf '\nPASS: fixed phase 1 recovered 101 and slot 0 was decided with that value again.\n'
+  printf 'This checks consensus, not execution after restart: S1 still lacks the body of request 101.\n'
+fi
+printf 'Logs: %s\n' "$RUN"

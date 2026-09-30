@@ -3,7 +3,9 @@ package didatrade.util;
 import didatrade.DidaTradePaxos;
 import didatrade.configs.ConfigurationScheduler;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 /** Real phase 1. Wait quorum. Keep value with highest valballot. */
@@ -13,6 +15,7 @@ public class PhaseOneResponseProcessor extends PhaseOneProcessor {
 
   // Set not counter. Same acceptor twice must not fill quorum twice.
   private final Set<Integer> promises;
+  private final Map<Integer, DidaTradePaxos.AcceptedInstance> acceptedInstances = new HashMap<>();
 
   private boolean rejected;
   private int value;
@@ -52,6 +55,11 @@ public class PhaseOneResponseProcessor extends PhaseOneProcessor {
     return this.maxballot;
   }
 
+  @Override
+  public synchronized Map<Integer, DidaTradePaxos.AcceptedInstance> getAcceptedInstances() {
+    return Map.copyOf(this.acceptedInstances);
+  }
+
   /** Promise count. For logs and report message counts. */
   public synchronized int getPromises() {
     return this.promises.size();
@@ -77,6 +85,14 @@ public class PhaseOneResponseProcessor extends PhaseOneProcessor {
     // Duplicate reply from acceptor already counted. Ignore.
     if (this.promises.add(last_response.getServerid()) == false) {
       return false;
+    }
+
+    for (DidaTradePaxos.AcceptedInstance entry : last_response.getAcceptedinstancesList()) {
+      DidaTradePaxos.AcceptedInstance previous = this.acceptedInstances.get(entry.getInstance());
+      if (entry.getValballot() >= 0
+          && (previous == null || entry.getValballot() > previous.getValballot())) {
+        this.acceptedInstances.put(entry.getInstance(), entry);
+      }
     }
 
     // Keep value accepted at highest ballot. This rule stop new leader overwriting

@@ -2,6 +2,7 @@ package didatrade.util;
 
 import didatrade.DidaTradePaxos;
 import didatrade.configs.ConfigurationScheduler;
+import java.util.Map;
 
 /**
  * Common type for phase 1 processors. MainLoop hold either one.
@@ -30,6 +31,9 @@ public abstract class PhaseOneProcessor
 
   /** Highest ballot any acceptor reported. Leader use it to catch up after reject. */
   public abstract int getMaxballot();
+
+  /** Highest-ballot acceptance recovered for each instance in the quorum. */
+  public abstract Map<Integer, DidaTradePaxos.AcceptedInstance> getAcceptedInstances();
 
   public static PhaseOneProcessor create(
       ConfigurationScheduler s, int low_ballot, int high_ballot) {
