@@ -46,11 +46,18 @@ public class ScheduleC extends Schedule {
   }
 
   public Integer quorum(int ballot) {
-    if (ballot < 2) return new Integer(2);
-    else return new Integer(3);
+    return new Integer(3);
   }
 
   public boolean fastpaxos(int ballot) {
     return ((ballot == 0) || (ballot == 2));
+  }
+
+  public Integer supermajority(int ballot) {
+    return new Integer(4);
+  }
+
+  public Integer recoveryquorum(int ballot) {
+    return new Integer(2);
   }
 }

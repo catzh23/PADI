@@ -11,7 +11,7 @@ public class ConfigurationScheduler {
 
   public ConfigurationScheduler(char option) {
     if (option == 'C') s = new ScheduleC();
-    if (option == 'B') s = new ScheduleB();
+    else if (option == 'B') s = new ScheduleB();
     else s = new ScheduleA();
   }
 
@@ -55,5 +55,13 @@ public class ConfigurationScheduler {
 
   public boolean fastpaxos(int ballot) {
     return s.fastpaxos(ballot);
+  }
+
+  public Integer supermajority(int ballot) {
+    return s.supermajority(ballot);
+  }
+
+  public Integer recoveryquorum(int ballot) {
+    return s.recoveryquorum(ballot);
   }
 }

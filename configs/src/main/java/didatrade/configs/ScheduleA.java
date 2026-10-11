@@ -46,4 +46,12 @@ public class ScheduleA extends Schedule {
   public boolean fastpaxos(int ballot) {
     return ((ballot % 3) == 0);
   }
+
+  public Integer supermajority(int ballot) {
+    return new Integer(3);
+  }
+
+  public Integer recoveryquorum(int ballot) {
+    return new Integer(2);
+  }
 }
