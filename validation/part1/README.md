@@ -87,22 +87,19 @@ Run the scenarios sequentially as shown above.
 
 ## Baseline demonstration
 
-Use the maintained demo for the bogus/fixed comparison:
+The bogus/fixed comparison lives in `validation/step1/`:
 
 ```bash
-bash demo/bogus_phase1.sh bogus
-bash demo/bogus_phase1.sh fixed
+python3 validation/step1/run.py bogus
+python3 validation/step1/run.py fixed
 ```
 
-See [the demo README](../../demo/README.md) for the scenario and expected results.
-Both demo modes exit 0 when their expected outcome is observed: divergence for
+See [the Step 1 README](../step1/README.md) for the scenario and expected results.
+Both modes exit 0 when their expected outcome is observed: divergence for
 `bogus`, and preservation of the previous decision for `fixed`.
 
-The Python runner still contains legacy `bogus` and `fixed` diagnostic scenarios
-based on the old restart demonstration. Their log assumptions and verdicts have
-not been updated for the current implementation. **Do not use them as acceptance
-tests, and do not use `run.py all` for the checkpoint:** `all` includes those legacy
-scenarios. Use the four explicit commands above and the maintained demo instead.
+`run.py all` runs the four scenarios above. All runners share the harness in
+`validation/lab.py`.
 
 ## Scope and limitations
 
@@ -116,6 +113,6 @@ body. Those are known limitations, not behaviours validated as solved here.
 Commit `run.py`, the three Java check files, this README and `.gitignore`.
 The local `.gitignore` excludes `runs/`, `classpath.txt` and `__pycache__/`.
 Do not commit generated logs, result directories, compiled classes or Maven build
-output. Production source changes and the scripts under `demo/` are separate from
+output. Production source changes and the scripts under `validation/step1/` and `validation/step4/` are separate from
 this validation directory and must also be present in the repository for the
 corresponding commands to work.
