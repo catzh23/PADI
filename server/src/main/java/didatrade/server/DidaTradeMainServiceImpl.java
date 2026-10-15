@@ -41,7 +41,11 @@ public class DidaTradeMainServiceImpl
     System.out.println("Result is ready for open request with reqid " + reqid);
 
     DidaTradeMain.PopulateReply response =
-        DidaTradeMain.PopulateReply.newBuilder().setReqid(reqid).setResult(result).build();
+        DidaTradeMain.PopulateReply.newBuilder()
+            .setReqid(reqid)
+            .setResult(result)
+            .setLastindex(request_record.getLogIndex())
+            .build();
     responseObserver.onNext(response);
     responseObserver.onCompleted();
   }
@@ -75,7 +79,11 @@ public class DidaTradeMainServiceImpl
     System.out.println("Result is ready for add request with reqid " + reqid);
 
     DidaTradeMain.AddUserReply response =
-        DidaTradeMain.AddUserReply.newBuilder().setReqid(reqid).setResult(result).build();
+        DidaTradeMain.AddUserReply.newBuilder()
+            .setReqid(reqid)
+            .setResult(result)
+            .setLastindex(request_record.getLogIndex())
+            .build();
 
     responseObserver.onNext(response);
     responseObserver.onCompleted();
@@ -107,7 +115,11 @@ public class DidaTradeMainServiceImpl
     System.out.println("Result is ready for add request with reqid " + reqid);
 
     DidaTradeMain.BuyReply response =
-        DidaTradeMain.BuyReply.newBuilder().setReqid(reqid).setResult(result).build();
+        DidaTradeMain.BuyReply.newBuilder()
+            .setReqid(reqid)
+            .setResult(result)
+            .setLastindex(request_record.getLogIndex())
+            .build();
 
     responseObserver.onNext(response);
     responseObserver.onCompleted();
@@ -140,7 +152,11 @@ public class DidaTradeMainServiceImpl
     System.out.println("Result is ready for add request with reqid " + reqid);
 
     DidaTradeMain.SellReply response =
-        DidaTradeMain.SellReply.newBuilder().setReqid(reqid).setResult(result).build();
+        DidaTradeMain.SellReply.newBuilder()
+            .setReqid(reqid)
+            .setResult(result)
+            .setLastindex(request_record.getLogIndex())
+            .build();
 
     responseObserver.onNext(response);
     responseObserver.onCompleted();
@@ -155,29 +171,25 @@ public class DidaTradeMainServiceImpl
 
     int reqid = request.getReqid();
     int uid = request.getUserid();
+    int min_index = request.getMinindex();
 
     // for debug purposes
-    System.out.println("reqid " + reqid + " userid " + uid);
+    System.out.println("reqid " + reqid + " userid " + uid + " minindex " + min_index);
+    this.server_state.waitForExecutedIndex(min_index);
 
-    DidaTradeCommand command = new DidaTradeCommand(DidaTradeAction.BALANCE, uid);
-
-    // for debug purposes
-    System.out.println("Adding balance request with reqid " + reqid + " to pending");
-
-    RequestRecord request_record = new RequestRecord(reqid, command);
-    this.server_state.req_history.addToPending(reqid, request_record);
-    this.server_state.main_loop.wakeup();
-    boolean result = request_record.waitForResponse();
+    int balance = this.server_state.trade_manager.balance(uid);
+    int last_index = this.server_state.getExecutedIndex();
+    boolean result = (balance != -1);
 
     // for debug purposes
-    System.out.println("Result is ready for add request with reqid " + reqid);
+    System.out.println("Balance for reqid " + reqid + " is " + balance + " at index " + last_index);
 
-    int balance = command.getQuantity();
     DidaTradeMain.BalanceReply response =
         DidaTradeMain.BalanceReply.newBuilder()
             .setReqid(reqid)
             .setResult(result)
             .setBalance(balance)
+            .setLastindex(last_index)
             .build();
 
     responseObserver.onNext(response);

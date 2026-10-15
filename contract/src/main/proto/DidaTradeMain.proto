@@ -10,8 +10,9 @@ message PopulateRequest {
 }
 
 message PopulateReply {
-  int32 reqid   = 1;
-  bool  result	= 2;
+  int32 reqid     = 1;
+  bool  result    = 2;
+  int32 lastindex = 3;
 }
 
 message AddUserRequest {
@@ -22,8 +23,9 @@ message AddUserRequest {
 }
 
 message AddUserReply {
-  int32 reqid   = 1;
-  bool  result	= 2;
+  int32 reqid     = 1;
+  bool  result    = 2;
+  int32 lastindex = 3;
 }
 
 message SellRequest {
@@ -33,8 +35,9 @@ message SellRequest {
 }
 
 message SellReply {
-  int32 reqid   = 1;
-  bool  result	= 2;
+  int32 reqid     = 1;
+  bool  result    = 2;
+  int32 lastindex = 3;
 }
 
 message BuyRequest {
@@ -44,19 +47,22 @@ message BuyRequest {
 }
 
 message BuyReply {
-  int32 reqid   = 1;
-  bool  result	= 2;
+  int32 reqid     = 1;
+  bool  result    = 2;
+  int32 lastindex = 3;
 }
 
 message BalanceRequest {
   int32 reqid    = 1;
   int32 userid   = 2;
+  int32 minindex = 3;
 }
 
 message BalanceReply {
-  int32 reqid   = 1;
-  bool  result	= 2;
-  int32 balance = 3;
+  int32 reqid     = 1;
+  bool  result    = 2;
+  int32 balance   = 3;
+  int32 lastindex = 4;
 }
 
 message DumpRequest {

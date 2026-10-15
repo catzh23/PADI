@@ -105,12 +105,18 @@ public class MainLoop implements Runnable {
 
   private void startPrepare(int ballot) {
     List<Integer> acceptors = this.server_state.scheduler.acceptors(ballot);
-    this.prepare_processor = PhaseOneProcessor.create(
-        this.server_state.scheduler, Math.max(this.server_state.getCompletedBallot(), 0), ballot);
-    this.prepare_collector = new GenericResponseCollector<>(
-        new ArrayList<>(), acceptors.size(), this.prepare_processor);
-    var request = DidaTradePaxos.PhaseOneRequest.newBuilder()
-        .setInstance(this.next_log_entry).setRequestballot(ballot).build();
+    this.prepare_processor =
+        PhaseOneProcessor.create(
+            this.server_state.scheduler,
+            Math.max(this.server_state.getCompletedBallot(), 0),
+            ballot);
+    this.prepare_collector =
+        new GenericResponseCollector<>(new ArrayList<>(), acceptors.size(), this.prepare_processor);
+    var request =
+        DidaTradePaxos.PhaseOneRequest.newBuilder()
+            .setInstance(this.next_log_entry)
+            .setRequestballot(ballot)
+            .build();
     System.out.println("Going to run paxos phase 1 for ballot " + ballot);
     for (int acceptor : acceptors)
       this.server_state.async_stubs[acceptor].phaseone(request, observer(this.prepare_collector));
@@ -129,8 +135,11 @@ public class MainLoop implements Runnable {
         }
         this.prepared_ballot = ballot;
         this.server_state.setLastAcceptedBallot(ballot);
-        System.out.println("Multi-prepare completed for ballot " + ballot
-            + "; recovered slots = " + this.prepared_values.keySet());
+        System.out.println(
+            "Multi-prepare completed for ballot "
+                + ballot
+                + "; recovered slots = "
+                + this.prepared_values.keySet());
       }
     }
     this.prepare_collector = null;
@@ -195,12 +204,18 @@ public class MainLoop implements Runnable {
   private void startProposal(int slot, int value, int ballot) {
     List<Integer> acceptors = this.server_state.scheduler.acceptors(ballot);
     var processor = new PhaseTwoResponseProcessor(this.server_state.scheduler.quorum(ballot));
-    var collector = new GenericResponseCollector<DidaTradePaxos.PhaseTwoReply>(
-        new ArrayList<>(), acceptors.size(), processor);
+    var collector =
+        new GenericResponseCollector<DidaTradePaxos.PhaseTwoReply>(
+            new ArrayList<>(), acceptors.size(), processor);
     this.in_flight.put(slot, new Proposal(value, processor, collector));
-    var request = DidaTradePaxos.PhaseTwoRequest.newBuilder()
-        .setInstance(slot).setValue(value).setRequestballot(ballot).build();
-    System.out.println("Sending phase 2 for slot " + slot + " in ballot " + ballot + ", value " + value);
+    var request =
+        DidaTradePaxos.PhaseTwoRequest.newBuilder()
+            .setInstance(slot)
+            .setValue(value)
+            .setRequestballot(ballot)
+            .build();
+    System.out.println(
+        "Sending phase 2 for slot " + slot + " in ballot " + ballot + ", value " + value);
     for (int acceptor : acceptors)
       this.server_state.async_stubs[acceptor].phasetwo(request, observer(collector));
   }
@@ -215,12 +230,16 @@ public class MainLoop implements Runnable {
         if (request == null) return;
         execute(entry, request);
       }
-      System.out.println("Log entry with number " + this.next_log_entry
-          + " has been decided with command id = " + entry.command_id);
+      System.out.println(
+          "Log entry with number "
+              + this.next_log_entry
+              + " has been decided with command id = "
+              + entry.command_id);
       this.prepared_values.remove(this.next_log_entry);
       this.in_flight.remove(this.next_log_entry);
       this.retry_after.remove(this.next_log_entry);
       this.next_log_entry++;
+      this.server_state.setExecutedIndex(this.next_log_entry);
     }
   }
 
@@ -270,6 +289,7 @@ public class MainLoop implements Runnable {
             + " with result = "
             + result);
     request_record.setResponse(result);
+    request_record.setLogIndex(this.next_log_entry + 1);
     this.server_state.req_history.moveToProcessed(request_record.getId());
   }
 }

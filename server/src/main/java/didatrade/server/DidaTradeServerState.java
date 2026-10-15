@@ -30,6 +30,8 @@ public class DidaTradeServerState {
   private int completed_ballot;
   /* Ballot of the last accepted phase 1 proposed by this server */
   private int last_accepted_ballot;
+  /* count of log entries this replica has executed */
+  private int executed_index;
 
   private int debug_mode;
   private boolean fastpaxos_on;
@@ -48,6 +50,7 @@ public class DidaTradeServerState {
     this.current_ballot = 0;
     this.completed_ballot = -1;
     this.last_accepted_ballot = -1;
+    this.executed_index = 0;
     this.req_history = new RequestHistory();
     this.paxos_log = new PaxosLog();
     this.main_loop = new MainLoop(this);
@@ -151,5 +154,23 @@ public class DidaTradeServerState {
 
   public synchronized void setDebugMode(int mode) {
     this.debug_mode = mode;
+  }
+
+  public synchronized int getExecutedIndex() {
+    return this.executed_index;
+  }
+
+  public synchronized void setExecutedIndex(int index) {
+    if (index > this.executed_index) this.executed_index = index;
+    this.notifyAll();
+  }
+
+  public synchronized void waitForExecutedIndex(int index) {
+    while (this.executed_index < index) {
+      try {
+        wait();
+      } catch (InterruptedException e) {
+      }
+    }
   }
 }
