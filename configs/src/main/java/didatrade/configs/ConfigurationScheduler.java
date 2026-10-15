@@ -10,8 +10,8 @@ public class ConfigurationScheduler {
   }
 
   public ConfigurationScheduler(char option) {
-    if (option == 'B') s = new ScheduleB();
-    else if (option == 'C') s = new ScheduleC();
+    if (option == 'C') s = new ScheduleC();
+    else if (option == 'B') s = new ScheduleB();
     else s = new ScheduleA();
   }
 
@@ -53,15 +53,15 @@ public class ConfigurationScheduler {
     return s.quorum(ballot);
   }
 
-  public Integer fastquorum(int ballot) {
-    return s.fastquorum(ballot);
+  public boolean fastpaxos(int ballot) {
+    return s.fastpaxos(ballot);
+  }
+
+  public Integer supermajority(int ballot) {
+    return s.supermajority(ballot);
   }
 
   public Integer recoveryquorum(int ballot) {
     return s.recoveryquorum(ballot);
-  }
-
-  public boolean fastpaxos(int ballot) {
-    return s.fastpaxos(ballot);
   }
 }

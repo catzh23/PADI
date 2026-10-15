@@ -346,6 +346,7 @@ public class MainLoop implements Runnable {
       this.in_flight.remove(this.next_log_entry);
       this.retry_after.remove(this.next_log_entry);
       this.next_log_entry++;
+      this.server_state.setExecutedIndex(this.next_log_entry);
     }
   }
 
@@ -395,6 +396,7 @@ public class MainLoop implements Runnable {
             + " with result = "
             + result);
     request_record.setResponse(result);
+    request_record.setLogIndex(this.next_log_entry + 1);
     this.server_state.req_history.moveToProcessed(request_record.getId());
   }
 }

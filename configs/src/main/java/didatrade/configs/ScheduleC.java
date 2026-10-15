@@ -46,18 +46,18 @@ public class ScheduleC extends Schedule {
   }
 
   public Integer quorum(int ballot) {
-    return new Integer(3); // 5 nodes in the acceptor set, so quorum is 3
+    return new Integer(3);
   }
 
-  public Integer fastquorum(int ballot) {
+  public boolean fastpaxos(int ballot) {
+    return ((ballot == 0) || (ballot == 2));
+  }
+
+  public Integer supermajority(int ballot) {
     return new Integer(4);
   }
 
   public Integer recoveryquorum(int ballot) {
     return new Integer(2);
-  }
-
-  public boolean fastpaxos(int ballot) {
-    return ((ballot == 0) || (ballot == 2));
   }
 }

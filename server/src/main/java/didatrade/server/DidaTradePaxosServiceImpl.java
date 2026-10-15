@@ -173,7 +173,7 @@ public class DidaTradePaxosServiceImpl
 
           int needed_quorum =
               entry.learning_fast
-                  ? this.server_state.scheduler.fastquorum(ballot)
+                  ? this.server_state.scheduler.supermajority(ballot)
                   : this.server_state.scheduler.quorum(ballot);
           if (entry.learning_votes.get(value).size() >= needed_quorum) {
             entry.command_id = value;

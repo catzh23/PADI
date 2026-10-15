@@ -5,12 +5,14 @@ public class RequestRecord {
   private DidaTradeCommand request;
   private boolean response_available;
   private boolean response_value;
+  private int log_index;
 
   public RequestRecord(int id) {
     this.requestid = id;
     this.request = null;
     this.response_available = false;
     this.response_value = false;
+    this.log_index = 0;
   }
 
   public RequestRecord(int id, DidaTradeCommand rq) {
@@ -18,6 +20,7 @@ public class RequestRecord {
     this.request = rq;
     this.response_available = false;
     this.response_value = false;
+    this.log_index = 0;
   }
 
   // Getter and Setter methods for all fields
@@ -31,6 +34,14 @@ public class RequestRecord {
 
   public void setRequest(DidaTradeCommand rq) {
     this.request = rq;
+  }
+
+  public int getLogIndex() {
+    return this.log_index;
+  }
+
+  public void setLogIndex(int index) {
+    this.log_index = index;
   }
 
   public boolean getResponseValue() {

@@ -1,4 +1,4 @@
-# Demos: showing the baseline is bogus
+# Validation of Step 1: the baseline is bogus
 
 Project Step 1 asks students to *"implement debug modes required to show that the
 baseline is bogus"*. This directory holds a scripted, self-checking reproduction.
@@ -7,8 +7,8 @@ Run from the repository root in Ubuntu/WSL, with Java 22, Maven and Python 3:
 
 ```bash
 mvn clean install                     # build all modules
-bash demo/bogus_phase1.sh bogus        # baseline phase 1 -> expect divergence
-bash demo/bogus_phase1.sh fixed        # corrected phase 1 -> expect the old decision to be preserved
+python3 validation/step1/run.py bogus   # baseline phase 1 -> expect divergence
+python3 validation/step1/run.py fixed   # corrected phase 1 -> expect the old decision to be preserved
 ```
 
 Both exit 0 when the expected outcome is observed, so the pair works as a regression
@@ -16,7 +16,7 @@ test. `bogus` selects the old processor with `-Ddidatrade.phase1=bogus`;
 `PhaseOneBogusProcessor` is kept in the tree for exactly this reason.
 The normal implementation uses `PhaseOneResponseProcessor`.
 
-Per-process logs land in a separate directory for each run under `demo/run/`
+Per-process logs land in a separate directory for each run under `validation/step1/runs/`
 (gitignored). The script prints the directory and preserves previous runs.
 
 ## What is bogus
@@ -97,14 +97,14 @@ so the leader is **forced to re-propose `101`**.
 The bogus run reports:
 
 ```text
-PASS: baseline defect reproduced. Slot 0 executed as 101 on S0/S2 and 102 on restarted S1.
+PASS bogus: baseline defect reproduced (slot 0 diverges) | S0/S1/S2 = 101/102/101
 ```
 
 Here, `PASS` means the demo reproduced the defect, not that bogus Paxos is correct.
 
 ## After the fix
 
-`bash demo/bogus_phase1.sh fixed` runs the same scenario with the corrected processor.
+`python3 validation/step1/run.py fixed` runs the same scenario with the corrected processor.
 While S0 and S2 are frozen, S1's own promise is insufficient to complete phase 1.
 After un-freeze, S1 obtains a quorum and recovers the original value:
 
@@ -118,7 +118,8 @@ from the proposer's phase 2 collector or the learner, and checks that S1 did not
 propose or execute `102` for that slot. It reports:
 
 ```text
-PASS: fixed phase 1 recovered 101 and slot 0 was decided with that value again.
+PASS fixed: prepare waits for a majority while S0/S2 are frozen
+PASS fixed: S1 recovered 101 and never proposed 102 for slot 0
 ```
 
 **What this then exposes.** S1 recovers which request ID was decided, but cannot
@@ -138,19 +139,19 @@ If those ports are occupied, it stops rather than reusing an existing server.
 To choose another base port:
 
 ```bash
-PORT=9300 bash demo/bogus_phase1.sh bogus
-PORT=9300 bash demo/bogus_phase1.sh fixed
+python3 validation/step1/run.py bogus --port 9300
+python3 validation/step1/run.py fixed --port 9300
 ```
 
 The script waits for log events with timeouts instead of advancing after fixed
 sleeps. It restarts the console after S1's crash to avoid reusing a connection
 still reconnecting to the previous process. Maven supplies the dependency
-classpath, and compiled classes and FIFOs are staged on the Linux filesystem.
+classpath, and compiled classes are staged on the Linux filesystem.
 
 Only processes started by this invocation are terminated on exit. Existing manual
 sessions are left running. A timeout, unexpected process exit or failed check
 returns a nonzero exit code and identifies the log to inspect. A timeout alone
 is not treated as evidence of a safety violation.
 
-`bogus_phase1.sh` defines the scenario and assertions; `lab.sh` provides process
-startup, terminal input, waiting and cleanup.
+`run.py` defines the scenario and assertions; `../lab.py` (shared with Step 4 and
+`part1`) provides process startup, terminal input, waiting and cleanup.

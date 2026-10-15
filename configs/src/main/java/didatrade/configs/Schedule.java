@@ -20,9 +20,9 @@ public abstract class Schedule {
 
   abstract Integer quorum(int ballot);
 
-  abstract Integer fastquorum(int ballot);
+  abstract boolean fastpaxos(int ballot);
+
+  abstract Integer supermajority(int ballot);
 
   abstract Integer recoveryquorum(int ballot);
-
-  abstract boolean fastpaxos(int ballot);
 }

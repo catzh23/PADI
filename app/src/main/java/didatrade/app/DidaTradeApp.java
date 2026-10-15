@@ -28,6 +28,7 @@ public class DidaTradeApp {
   private DidaTradeMainServiceGrpc.DidaTradeMainServiceStub[] async_stubs;
   private char schedule;
   private ConfigurationScheduler scheduler;
+  private int last_index;
 
   public DidaTradeApp() {
     this.interactive_mode = true;
@@ -46,6 +47,7 @@ public class DidaTradeApp {
     this.targets = new String[n_servers];
     this.schedule = 'A';
     this.scheduler = null;
+    this.last_index = 0;
   }
 
   private boolean populate(int quantity) {
@@ -74,6 +76,8 @@ public class DidaTradeApp {
       Iterator<DidaTradeMain.PopulateReply> populate_iterator = populate_responses.iterator();
       DidaTradeMain.PopulateReply populate_reply = populate_iterator.next();
       result = populate_reply.getResult();
+      if (populate_reply.getLastindex() > this.last_index)
+        this.last_index = populate_reply.getLastindex();
       if (result) {
         System.out.println("User DB has been populated with " + quantity + "users.\n");
       } else {
@@ -111,6 +115,8 @@ public class DidaTradeApp {
       Iterator<DidaTradeMain.AddUserReply> adduser_iterator = adduser_responses.iterator();
       DidaTradeMain.AddUserReply adduser_reply = adduser_iterator.next();
       result = adduser_reply.getResult();
+      if (adduser_reply.getLastindex() > this.last_index)
+        this.last_index = adduser_reply.getLastindex();
       if (result) {
         System.out.println(
             "User " + uid + " added with cash " + cash + "and stock" + stock + "% of stock\n");
@@ -146,6 +152,7 @@ public class DidaTradeApp {
       Iterator<DidaTradeMain.SellReply> sell_iterator = sell_responses.iterator();
       DidaTradeMain.SellReply sell_reply = sell_iterator.next();
       result = sell_reply.getResult();
+      if (sell_reply.getLastindex() > this.last_index) this.last_index = sell_reply.getLastindex();
       if (result) {
         System.out.println("User " + uid + " did sell " + quantity + "% of stock\n");
       } else {
@@ -180,6 +187,7 @@ public class DidaTradeApp {
       Iterator<DidaTradeMain.BuyReply> buy_iterator = buy_responses.iterator();
       DidaTradeMain.BuyReply buy_reply = buy_iterator.next();
       result = buy_reply.getResult();
+      if (buy_reply.getLastindex() > this.last_index) this.last_index = buy_reply.getLastindex();
       if (result) {
         System.out.println("User " + uid + " did spend " + quantity + "% of balance\n");
       } else {
@@ -200,6 +208,7 @@ public class DidaTradeApp {
         DidaTradeMain.BalanceRequest.newBuilder();
     balance_request.setReqid(reqid);
     balance_request.setUserid(uid);
+    balance_request.setMinindex(this.last_index);
 
     ArrayList<DidaTradeMain.BalanceReply> balance_responses =
         new ArrayList<DidaTradeMain.BalanceReply>();
@@ -216,6 +225,8 @@ public class DidaTradeApp {
       Iterator<DidaTradeMain.BalanceReply> balance_iterator = balance_responses.iterator();
       DidaTradeMain.BalanceReply balance_reply = balance_iterator.next();
       result = balance_reply.getResult();
+      if (balance_reply.getLastindex() > this.last_index)
+        this.last_index = balance_reply.getLastindex();
       if (result) {
         balance = balance_reply.getBalance();
         System.out.println("User " + uid + " balance is " + balance + "\n");

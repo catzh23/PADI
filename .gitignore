@@ -55,5 +55,15 @@ Thumbs.db
 *~
 *.swp
 
-# demo harness output
-demo/run/
+# live validation output
+validation/*/runs/
+
+# LaTeX build output
+report/*.aux
+report/*.log
+report/*.out
+report/*.synctex.gz
+report/*.pdf
+
+# Python bytecode
+__pycache__/
