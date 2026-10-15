@@ -43,6 +43,14 @@ public class ScheduleA extends Schedule {
     return new Integer(2);
   }
 
+  public Integer fastquorum(int ballot) {
+    return new Integer(3);
+  }
+
+  public Integer recoveryquorum(int ballot) {
+    return new Integer(2);
+  }
+
   public boolean fastpaxos(int ballot) {
     return ((ballot % 3) == 0);
   }

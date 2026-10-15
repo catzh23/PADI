@@ -14,7 +14,7 @@ lab_init() {
 import socket, sys
 sockets = []
 try:
-    for port in range(int(sys.argv[1]), int(sys.argv[1]) + 3):
+    for port in range(int(sys.argv[1]), int(sys.argv[1]) + 7):
         sock = socket.socket()
         sockets.append(sock)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

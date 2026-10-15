@@ -57,4 +57,8 @@ public class RequestHistory {
     this.processed.put(id, record);
     return record;
   }
+
+  public synchronized java.util.List<Integer> getPendingIds() {
+    return new java.util.ArrayList<>(this.pending.keySet());
+  }
 }

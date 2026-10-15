@@ -65,4 +65,9 @@ public class GenericResponseCollector<T> {
   public synchronized boolean isDone() {
     return this.done;
   }
+
+  // Only read after isDone(): from then on no more responses are added.
+  public synchronized ArrayList<T> getCollectedResponses() {
+    return this.collected_responses;
+  }
 }

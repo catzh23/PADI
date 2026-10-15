@@ -16,13 +16,20 @@ public class MainLoop implements Runnable {
   private int next_log_entry;
   private int active_ballot = -1;
   private int prepared_ballot = -1;
+  private boolean fast_active = false; // whether running fast paxos
+  private int any_from = -1; // first slot handed over to acceptors with 'any'
+  private boolean any_sent = false; // tells whether 'any' was sent
+  private long any_retry_after = 0; // for when 'any' message doesn't reach all replicas
   private long prepare_retry_after;
   private PhaseOneProcessor prepare_processor;
   private GenericResponseCollector<DidaTradePaxos.PhaseOneReply> prepare_collector;
+  private GenericResponseCollector<DidaTradePaxos.AnyReply> any_collector;
   // Keep a proposal's value even if its RPCs fail: never change it within a ballot.
   private final TreeMap<Integer, Integer> prepared_values = new TreeMap<>();
   private final Map<Integer, Proposal> in_flight = new HashMap<>();
   private final Map<Integer, Long> retry_after = new HashMap<>();
+  // Keep track of the requestIDs this acceptor has placed in the current ballot
+  private final Set<Integer> fast_placed = new HashSet<>();
 
   private record Proposal(
       int value,
@@ -47,26 +54,38 @@ public class MainLoop implements Runnable {
       if (ballot != this.active_ballot) {
         this.active_ballot = ballot;
         this.prepared_ballot = -1;
+        this.fast_active = false;
+        this.any_from = -1;
+        this.any_sent = false;
+        this.any_retry_after = 0;
         this.prepare_collector = null;
+        this.any_collector = null;
         this.prepare_processor = null;
         this.prepare_retry_after = 0;
         this.prepared_values.clear();
         this.in_flight.clear();
         this.retry_after.clear();
-        this.server_state.setLastAcceptedBallot(-1);
+        this.fast_placed.clear();
       }
 
+      finishAny(ballot);
       finishPrepare(ballot);
       finishProposals(ballot);
       executeReadyEntries();
       if (ballot != this.server_state.getCurrentBallot()) continue;
 
+      fastAccept(ballot);
+
       if (ballot >= 0 && this.server_state.scheduler.leader(ballot) == this.server_state.my_id) {
         if (this.prepared_ballot == ballot) {
+          if (!any_sent && this.fast_active && System.nanoTime() >= this.any_retry_after)
+            startAny(ballot);
           proposeAvailable(ballot);
         } else if (this.prepare_collector == null
             && System.nanoTime() >= this.prepare_retry_after
-            && (ballot > 0 || this.server_state.req_history.getFirstPending() != null)) {
+            && (ballot > 0
+                || this.server_state.req_history.getFirstPending() != null
+                || this.server_state.scheduler.fastpaxos(ballot))) {
           startPrepare(ballot);
         }
       }
@@ -105,12 +124,18 @@ public class MainLoop implements Runnable {
 
   private void startPrepare(int ballot) {
     List<Integer> acceptors = this.server_state.scheduler.acceptors(ballot);
-    this.prepare_processor = PhaseOneProcessor.create(
-        this.server_state.scheduler, Math.max(this.server_state.getCompletedBallot(), 0), ballot);
-    this.prepare_collector = new GenericResponseCollector<>(
-        new ArrayList<>(), acceptors.size(), this.prepare_processor);
-    var request = DidaTradePaxos.PhaseOneRequest.newBuilder()
-        .setInstance(this.next_log_entry).setRequestballot(ballot).build();
+    this.prepare_processor =
+        PhaseOneProcessor.create(
+            this.server_state.scheduler,
+            Math.max(this.server_state.getCompletedBallot(), 0),
+            ballot);
+    this.prepare_collector =
+        new GenericResponseCollector<>(new ArrayList<>(), acceptors.size(), this.prepare_processor);
+    var request =
+        DidaTradePaxos.PhaseOneRequest.newBuilder()
+            .setInstance(this.next_log_entry)
+            .setRequestballot(ballot)
+            .build();
     System.out.println("Going to run paxos phase 1 for ballot " + ballot);
     for (int acceptor : acceptors)
       this.server_state.async_stubs[acceptor].phaseone(request, observer(this.prepare_collector));
@@ -128,9 +153,14 @@ public class MainLoop implements Runnable {
             this.prepared_values.put(entry.getInstance(), entry.getValue());
         }
         this.prepared_ballot = ballot;
-        this.server_state.setLastAcceptedBallot(ballot);
-        System.out.println("Multi-prepare completed for ballot " + ballot
-            + "; recovered slots = " + this.prepared_values.keySet());
+        fast_active = this.server_state.scheduler.fastpaxos(ballot);
+        any_from =
+            this.prepared_values.isEmpty() ? next_log_entry : this.prepared_values.lastKey() + 1;
+        System.out.println(
+            "Multi-prepare completed for ballot "
+                + ballot
+                + "; recovered slots = "
+                + this.prepared_values.keySet());
       }
     }
     this.prepare_collector = null;
@@ -180,6 +210,7 @@ public class MainLoop implements Runnable {
       if (System.nanoTime() < this.retry_after.getOrDefault(slot, 0L)) continue;
       Integer value = this.prepared_values.get(slot);
       if (value == null) {
+        if (this.fast_active && slot >= this.any_from) break;
         RequestRecord pending = this.server_state.req_history.getFirstPending(reserved);
         if (pending != null) value = pending.getId();
         else if (this.prepared_values.higherKey(slot) != null) value = PaxosInstance.NO_OP;
@@ -195,14 +226,105 @@ public class MainLoop implements Runnable {
   private void startProposal(int slot, int value, int ballot) {
     List<Integer> acceptors = this.server_state.scheduler.acceptors(ballot);
     var processor = new PhaseTwoResponseProcessor(this.server_state.scheduler.quorum(ballot));
-    var collector = new GenericResponseCollector<DidaTradePaxos.PhaseTwoReply>(
-        new ArrayList<>(), acceptors.size(), processor);
+    var collector =
+        new GenericResponseCollector<DidaTradePaxos.PhaseTwoReply>(
+            new ArrayList<>(), acceptors.size(), processor);
     this.in_flight.put(slot, new Proposal(value, processor, collector));
-    var request = DidaTradePaxos.PhaseTwoRequest.newBuilder()
-        .setInstance(slot).setValue(value).setRequestballot(ballot).build();
-    System.out.println("Sending phase 2 for slot " + slot + " in ballot " + ballot + ", value " + value);
+    var request =
+        DidaTradePaxos.PhaseTwoRequest.newBuilder()
+            .setInstance(slot)
+            .setValue(value)
+            .setRequestballot(ballot)
+            .build();
+    System.out.println(
+        "Sending phase 2 for slot " + slot + " in ballot " + ballot + ", value " + value);
     for (int acceptor : acceptors)
       this.server_state.async_stubs[acceptor].phasetwo(request, observer(collector));
+  }
+
+  private void startAny(int ballot) {
+    List<Integer> acceptors = this.server_state.scheduler.acceptors(ballot);
+    this.any_collector =
+        new GenericResponseCollector<DidaTradePaxos.AnyReply>(
+            new ArrayList<DidaTradePaxos.AnyReply>(), acceptors.size());
+
+    var request =
+        DidaTradePaxos.AnyRequest.newBuilder()
+            .setInstance(this.any_from)
+            .setRequestballot(ballot)
+            .build();
+
+    System.out.println("Sending 'any' from slot " + this.any_from + " in ballot " + ballot);
+
+    this.any_sent = true;
+    for (int acceptor : acceptors)
+      this.server_state.async_stubs[acceptor].any(request, observer(this.any_collector));
+  }
+
+  private void finishAny(int ballot) {
+    if (this.any_collector == null || !this.any_collector.isDone()) return;
+
+    int max_seen = -1;
+    int accepted_count = 0;
+    for (DidaTradePaxos.AnyReply reply : this.any_collector.getCollectedResponses()) {
+      if (reply.getAccepted()) accepted_count++;
+      else if (reply.getMaxballot() > max_seen) max_seen = reply.getMaxballot();
+    }
+    synchronized (this.server_state) {
+      if (max_seen > -1) this.server_state.setCurrentBallot(max_seen);
+    }
+
+    // in case 'any' message didn't reach all replicas, we retry after a timeout
+    if (max_seen == -1 && accepted_count < this.server_state.scheduler.acceptors(ballot).size()) {
+      this.any_sent = false;
+      this.any_retry_after = System.nanoTime() + RETRY_NANOS;
+    }
+
+    this.any_collector = null;
+  }
+
+  private void fastAccept(int ballot) {
+    Map<Integer, Integer> placed = new HashMap<>();
+
+    synchronized (this.server_state) {
+      if (ballot != this.server_state.getCurrentBallot()
+          || this.server_state.getAnyBallot() != ballot
+          || this.server_state.scheduler.isacceptor(this.server_state.my_id, ballot) == false) {
+        return;
+      }
+
+      int slot = Math.max(this.server_state.getAnyFrom(), this.next_log_entry);
+      for (int reqid : this.server_state.req_history.getPendingIds()) {
+        if (this.fast_placed.contains(reqid)) continue;
+        if (this.server_state.req_history.getIfProcessed(reqid) != null) continue;
+
+        PaxosInstance entry = this.server_state.paxos_log.getEntry(slot);
+        // finds available slot to place the request
+        while (entry != null && (entry.write_ballot == ballot || entry.decided)) {
+          slot++;
+          entry = this.server_state.paxos_log.getEntry(slot);
+        }
+
+        if (slot >= this.next_log_entry + PIPELINE_WINDOW)
+          break; // in case we keep the pipeline window
+
+        entry = this.server_state.paxos_log.testAndSetEntry(slot);
+        entry.accepted_value = reqid;
+        entry.write_ballot = ballot;
+        entry.accepted_fast = true;
+        this.fast_placed.add(reqid);
+        placed.put(reqid, slot);
+        System.out.println(
+            "Fast accepted request " + reqid + " in slot " + slot + " in ballot " + ballot);
+        slot++;
+      }
+    }
+
+    for (Map.Entry<Integer, Integer> item : placed.entrySet()) {
+      int reqid = item.getKey();
+      int slot = item.getValue();
+      this.server_state.sendLearn(slot, ballot, reqid, true);
+    }
   }
 
   private void executeReadyEntries() {
@@ -215,8 +337,11 @@ public class MainLoop implements Runnable {
         if (request == null) return;
         execute(entry, request);
       }
-      System.out.println("Log entry with number " + this.next_log_entry
-          + " has been decided with command id = " + entry.command_id);
+      System.out.println(
+          "Log entry with number "
+              + this.next_log_entry
+              + " has been decided with command id = "
+              + entry.command_id);
       this.prepared_values.remove(this.next_log_entry);
       this.in_flight.remove(this.next_log_entry);
       this.retry_after.remove(this.next_log_entry);

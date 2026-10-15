@@ -10,8 +10,8 @@ public class ConfigurationScheduler {
   }
 
   public ConfigurationScheduler(char option) {
-    if (option == 'C') s = new ScheduleC();
     if (option == 'B') s = new ScheduleB();
+    else if (option == 'C') s = new ScheduleC();
     else s = new ScheduleA();
   }
 
@@ -51,6 +51,14 @@ public class ConfigurationScheduler {
 
   public Integer quorum(int ballot) {
     return s.quorum(ballot);
+  }
+
+  public Integer fastquorum(int ballot) {
+    return s.fastquorum(ballot);
+  }
+
+  public Integer recoveryquorum(int ballot) {
+    return s.recoveryquorum(ballot);
   }
 
   public boolean fastpaxos(int ballot) {

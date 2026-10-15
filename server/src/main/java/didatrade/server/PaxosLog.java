@@ -26,6 +26,7 @@ public class PaxosLog {
                 .setInstance(entry.instance_nb)
                 .setValue(entry.accepted_value)
                 .setValballot(entry.write_ballot)
+                .setFast(entry.accepted_fast)
                 .build());
       }
     }

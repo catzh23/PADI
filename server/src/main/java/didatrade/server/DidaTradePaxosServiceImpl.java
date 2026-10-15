@@ -2,9 +2,6 @@ package didatrade.server;
 
 import didatrade.DidaTradePaxos;
 import didatrade.DidaTradePaxosServiceGrpc;
-import didatrade.util.CollectorStreamObserver;
-import didatrade.util.GenericResponseCollector;
-import io.grpc.Context;
 import io.grpc.stub.StreamObserver;
 import java.util.*;
 
@@ -84,6 +81,7 @@ public class DidaTradePaxosServiceImpl
         accepted = true;
         entry.accepted_value = value;
         entry.write_ballot = ballot;
+        entry.accepted_fast = false;
         this.server_state.setCurrentBallot(ballot);
       } else maxballot = this.server_state.getCurrentBallot();
     }
@@ -104,45 +102,40 @@ public class DidaTradePaxosServiceImpl
     responseObserver.onCompleted();
 
     // Notify learners
-    if (accepted == true) {
+    if (accepted == true) this.server_state.sendLearn(instance, ballot, value, false);
+  }
 
-      Context ctx = Context.current().fork();
-      ctx.run(
-          () -> {
-            List<Integer> learners = this.server_state.scheduler.learners(ballot);
-            int n_targets = learners.size();
+  @Override
+  public void any(
+      DidaTradePaxos.AnyRequest request, StreamObserver<DidaTradePaxos.AnyReply> responseObserver) {
+    int instance = request.getInstance();
+    int ballot = request.getRequestballot();
+    boolean accepted = false;
+    int maxballot = ballot;
 
-            DidaTradePaxos.LearnRequest.Builder learn_request_builder =
-                DidaTradePaxos.LearnRequest.newBuilder();
-            learn_request_builder.setInstance(instance);
-            learn_request_builder.setValue(value);
-            learn_request_builder.setBallot(ballot);
-            learn_request_builder.setServerid(this.server_state.my_id);
-
-            DidaTradePaxos.LearnRequest learn_request = learn_request_builder.build();
-
-            // System.out.println("Sending learn request: \n" + learn_request);
-
-            System.out.println(
-                "Paxos acceptor: going to notify learners for entry "
-                    + instance
-                    + " with timestamp "
-                    + ballot
-                    + " request = "
-                    + learn_request);
-            ArrayList<DidaTradePaxos.LearnReply> learn_responses =
-                new ArrayList<DidaTradePaxos.LearnReply>();
-            GenericResponseCollector<DidaTradePaxos.LearnReply> learn_collector =
-                new GenericResponseCollector<DidaTradePaxos.LearnReply>(learn_responses, n_targets);
-            ;
-            for (int i = 0; i < n_targets; i++) {
-              CollectorStreamObserver<DidaTradePaxos.LearnReply> learn_observer =
-                  new CollectorStreamObserver<DidaTradePaxos.LearnReply>(learn_collector);
-              this.server_state.async_stubs[learners.get(i)].learn(learn_request, learn_observer);
-            }
-            // System.out.println("Learn request completed for instance = " + instance);
-          });
+    synchronized (this.server_state) {
+      if (ballot >= this.server_state.getCurrentBallot()) {
+        accepted = true;
+        this.server_state.setAnyBallot(ballot);
+        this.server_state.setAnyFrom(instance);
+        this.server_state.setCurrentBallot(ballot);
+      } else maxballot = this.server_state.getCurrentBallot();
     }
+
+    DidaTradePaxos.AnyReply.Builder response_builder = DidaTradePaxos.AnyReply.newBuilder();
+    response_builder.setServerid(this.server_state.my_id);
+    response_builder.setRequestballot(ballot);
+    response_builder.setAccepted(accepted);
+    response_builder.setMaxballot(maxballot);
+
+    DidaTradePaxos.AnyReply response = response_builder.build();
+
+    // System.out.println("Sending any response: " + response);
+
+    responseObserver.onNext(response);
+    responseObserver.onCompleted();
+
+    this.server_state.main_loop.wakeup();
   }
 
   @Override
@@ -166,26 +159,52 @@ public class DidaTradePaxosServiceImpl
       }
       if (member && !entry.decided) {
         if (ballot > entry.accept_ballot) {
-          entry.learning_value = value;
           entry.accept_ballot = ballot;
-          entry.learning_acceptors.clear();
+          entry.learning_fast = false;
+          entry.learning_votes.clear();
         }
-        if (ballot == entry.accept_ballot && value == entry.learning_value) {
-          entry.learning_acceptors.add(request.getServerid());
-        }
-        if (ballot == entry.accept_ballot
-            && entry.learning_acceptors.size() >= this.server_state.scheduler.quorum(ballot)) {
-          entry.command_id = entry.learning_value;
-          entry.decided = true;
-          System.out.println(
-              "Paxos learner decided slot "
-                  + instance
-                  + " in ballot "
-                  + ballot
-                  + ", value "
-                  + entry.command_id);
-          this.server_state.updateCompletedBallot(ballot);
-          wakeup = true;
+
+        if (ballot == entry.accept_ballot) {
+          entry
+              .learning_votes
+              .computeIfAbsent(value, k -> new HashSet<>())
+              .add(request.getServerid());
+          if (request.getFast()) entry.learning_fast = true;
+
+          int needed_quorum =
+              entry.learning_fast
+                  ? this.server_state.scheduler.fastquorum(ballot)
+                  : this.server_state.scheduler.quorum(ballot);
+          if (entry.learning_votes.get(value).size() >= needed_quorum) {
+            entry.command_id = value;
+            entry.decided = true;
+            System.out.println(
+                "Paxos learner decided slot "
+                    + instance
+                    + " in ballot "
+                    + ballot
+                    + ", value "
+                    + entry.command_id);
+            this.server_state.updateCompletedBallot(ballot);
+            wakeup = true;
+          } else if (entry.learning_fast) {
+            int max_votes = 0;
+            int total_votes = 0;
+            for (Set<Integer> votes : entry.learning_votes.values()) {
+              if (votes.size() > max_votes) max_votes = votes.size();
+              total_votes += votes.size();
+            }
+            int remaining = this.server_state.scheduler.acceptors(ballot).size() - total_votes;
+
+            if (max_votes + remaining < needed_quorum) {
+              System.out.println(
+                  "Collision detected for slot " + instance + " in ballot " + ballot);
+              if (ballot == this.server_state.getCurrentBallot()) {
+                this.server_state.setCurrentBallot(ballot + 1);
+                wakeup = true;
+              }
+            }
+          }
         }
       }
     }

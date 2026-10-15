@@ -1,10 +1,14 @@
 package didatrade.server;
 
 import didatrade.DebugInterceptor;
+import didatrade.DidaTradePaxos;
 import didatrade.DidaTradePaxosServiceGrpc;
 import didatrade.configs.*;
 import didatrade.configs.ConfigurationScheduler;
 import didatrade.core.*;
+import didatrade.util.CollectorStreamObserver;
+import didatrade.util.GenericResponseCollector;
+import io.grpc.Context;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import java.util.*;
@@ -28,11 +32,11 @@ public class DidaTradeServerState {
 
   private int current_ballot;
   private int completed_ballot;
-  /* Ballot of the last accepted phase 1 proposed by this server */
-  private int last_accepted_ballot;
 
   private int debug_mode;
   private boolean fastpaxos_on;
+  private int any_ballot; // the ballot this acceptor received 'any' for
+  private int any_from; // the first slot this acceptor received 'any' for
 
   MainLoop main_loop;
   Thread main_loop_worker;
@@ -45,9 +49,9 @@ public class DidaTradeServerState {
     this.debug_interceptor = new DebugInterceptor();
     this.debug_mode = 0;
     this.fastpaxos_on = false;
+    this.any_ballot = -1;
     this.current_ballot = 0;
     this.completed_ballot = -1;
-    this.last_accepted_ballot = -1;
     this.req_history = new RequestHistory();
     this.paxos_log = new PaxosLog();
     this.main_loop = new MainLoop(this);
@@ -78,6 +82,22 @@ public class DidaTradeServerState {
     // start worker
     this.main_loop_worker = new Thread(main_loop);
     this.main_loop_worker.start();
+  }
+
+  public synchronized int getAnyBallot() {
+    return this.any_ballot;
+  }
+
+  public synchronized void setAnyBallot(int ballot) {
+    this.any_ballot = ballot;
+  }
+
+  public synchronized int getAnyFrom() {
+    return this.any_from;
+  }
+
+  public synchronized void setAnyFrom(int from) {
+    this.any_from = from;
   }
 
   public synchronized int getCurrentBallot() {
@@ -129,14 +149,6 @@ public class DidaTradeServerState {
     return this.completed_ballot;
   }
 
-  public synchronized int getLastAcceptedBallot() {
-    return this.last_accepted_ballot;
-  }
-
-  public synchronized void setLastAcceptedBallot(int ballot) {
-    this.last_accepted_ballot = ballot;
-  }
-
   public synchronized boolean getFastPaxosMode() {
     return this.fastpaxos_on;
   }
@@ -151,5 +163,46 @@ public class DidaTradeServerState {
 
   public synchronized void setDebugMode(int mode) {
     this.debug_mode = mode;
+  }
+
+  // Helper Function so that it's available to both MainLoop and DidaTradePaxosServiceImpl
+  public void sendLearn(int instance, int ballot, int value, boolean fast) {
+    Context ctx = Context.current().fork();
+    ctx.run(
+        () -> {
+          List<Integer> learners = this.scheduler.learners(ballot);
+          int n_targets = learners.size();
+
+          DidaTradePaxos.LearnRequest.Builder learn_request_builder =
+              DidaTradePaxos.LearnRequest.newBuilder();
+          learn_request_builder.setInstance(instance);
+          learn_request_builder.setValue(value);
+          learn_request_builder.setBallot(ballot);
+          learn_request_builder.setServerid(this.my_id);
+          learn_request_builder.setFast(fast);
+
+          DidaTradePaxos.LearnRequest learn_request = learn_request_builder.build();
+
+          // System.out.println("Sending learn request: \n" + learn_request);
+
+          System.out.println(
+              "Paxos acceptor: going to notify learners for entry "
+                  + instance
+                  + " with timestamp "
+                  + ballot
+                  + " request = "
+                  + learn_request);
+          ArrayList<DidaTradePaxos.LearnReply> learn_responses =
+              new ArrayList<DidaTradePaxos.LearnReply>();
+          GenericResponseCollector<DidaTradePaxos.LearnReply> learn_collector =
+              new GenericResponseCollector<DidaTradePaxos.LearnReply>(learn_responses, n_targets);
+          ;
+          for (int i = 0; i < n_targets; i++) {
+            CollectorStreamObserver<DidaTradePaxos.LearnReply> learn_observer =
+                new CollectorStreamObserver<DidaTradePaxos.LearnReply>(learn_collector);
+            this.async_stubs[learners.get(i)].learn(learn_request, learn_observer);
+          }
+          // System.out.println("Learn request completed for instance = " + instance);
+        });
   }
 }

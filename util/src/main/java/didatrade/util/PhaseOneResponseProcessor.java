@@ -22,7 +22,11 @@ public class PhaseOneResponseProcessor extends PhaseOneProcessor {
   private int valballot;
   private int maxballot;
 
+  private final ConfigurationScheduler scheduler;
+  private final Map<Integer, Map<Integer, Integer>> slotVotes = new HashMap<>(); // slot -> votes
+
   public PhaseOneResponseProcessor(ConfigurationScheduler s, int low_ballot, int high_ballot) {
+    this.scheduler = s;
     this.quorum = s.quorum(high_ballot);
     this.promises = new HashSet<Integer>();
     this.rejected = false;
@@ -57,7 +61,22 @@ public class PhaseOneResponseProcessor extends PhaseOneProcessor {
 
   @Override
   public synchronized Map<Integer, DidaTradePaxos.AcceptedInstance> getAcceptedInstances() {
-    return Map.copyOf(this.acceptedInstances);
+    Map<Integer, DidaTradePaxos.AcceptedInstance> result = new HashMap<>();
+
+    for (DidaTradePaxos.AcceptedInstance entry : this.acceptedInstances.values()) {
+      int slot = entry.getInstance();
+      int threshold = this.scheduler.recoveryquorum(entry.getValballot());
+
+      DidaTradePaxos.AcceptedInstance chosen = entry; // "otherwise": any value with ballot j
+      for (Map.Entry<Integer, Integer> vote : this.slotVotes.get(slot).entrySet()) {
+        if (vote.getValue() >= threshold) {
+          // value may have been decided in ballot j: must adopt it.
+          chosen = entry.toBuilder().setValue(vote.getKey()).build();
+        }
+      }
+      result.put(slot, chosen);
+    }
+    return Map.copyOf(result);
   }
 
   /** Promise count. For logs and report message counts. */
@@ -88,10 +107,20 @@ public class PhaseOneResponseProcessor extends PhaseOneProcessor {
     }
 
     for (DidaTradePaxos.AcceptedInstance entry : last_response.getAcceptedinstancesList()) {
-      DidaTradePaxos.AcceptedInstance previous = this.acceptedInstances.get(entry.getInstance());
-      if (entry.getValballot() >= 0
-          && (previous == null || entry.getValballot() > previous.getValballot())) {
-        this.acceptedInstances.put(entry.getInstance(), entry);
+      if (entry.getValballot() < 0) continue;
+
+      int slot = entry.getInstance();
+
+      DidaTradePaxos.AcceptedInstance previous = this.acceptedInstances.get(slot);
+      if (previous == null || entry.getValballot() > previous.getValballot()) {
+        this.acceptedInstances.put(slot, entry); // new highest ballot
+        this.slotVotes.put(slot, new HashMap<>()); // so restart its counts
+      }
+
+      if (entry.getValballot() == this.acceptedInstances.get(slot).getValballot()) {
+        this.slotVotes
+            .get(slot)
+            .merge(entry.getValue(), 1, Integer::sum); // count votes for this value
       }
     }
 
