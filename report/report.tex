@@ -1,0 +1,342 @@
+\documentclass[times, 10pt,twocolumn]{article}
+\usepackage{latex8}
+\usepackage{times}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{booktabs}
+\usepackage{url}
+
+\pagestyle{empty}
+
+% Small inline helpers.
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\TODO}[1]{\textbf{[TODO: #1]}}
+
+\begin{document}
+
+\title{dida-trade: A Trading Service Replicated with Vertical Paxos}
+
+\author{Filip Dubj\'ak, n.\textsuperscript{o} 120560 \and
+        C\'atia Zharko, n.\textsuperscript{o} 109972 \and
+        Joana Cardoso, n.\textsuperscript{o} 109864 \\[4pt]
+        Instituto Superior T\'ecnico, Universidade de Lisboa}
+
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+\TODO{3--5 sentences once all sections are in: which steps we reached
+(1--4), the main design choices (quorum-based phase 1, Multi-Paxos with
+pipelined phase 2, causal \code{balance} read from a single replica), and
+how each is validated.}
+\end{abstract}
+
+%-------------------------------------------------------------------------
+\section{Introduction}
+
+dida-trade replicates a small trading state machine over a set of
+replicas, using one Paxos instance per log slot. Writes (\code{populate},
+\code{add}, \code{sell}, \code{buy}) are totally ordered by consensus and
+executed by every replica in slot order. This report covers the steps we
+implemented: completing the baseline with a correct phase~1
+(Step~1, Section~\ref{sec:step1}), Multi-Paxos (Step~2,
+Section~\ref{sec:step2}) \TODO{Step 3 if included}, and a causally
+ordered \code{balance} that bypasses Paxos (Step~4,
+Section~\ref{sec:step4}). Section~\ref{sec:eval} shows how each property
+is checked against the running system.
+
+%-------------------------------------------------------------------------
+\section{Step 1: Debug Modes and a Correct Phase 1}
+\label{sec:step1}
+
+\subsection{Debug modes}
+
+All debug modes except \code{crash} are implemented by a single gRPC
+\code{ServerInterceptor} (\code{DebugInterceptor}) wrapped around the
+client-facing and the Paxos services of each replica. The console
+service is deliberately \emph{not} intercepted, so a frozen or slow
+replica still obeys the console.
+
+\begin{itemize}\itemsep 0pt
+\item \textbf{freeze / un-freeze}: an incoming call blocks inside the
+  interceptor on a monitor until \code{un-freeze} calls
+  \code{notifyAll()}. Requests are therefore delayed, never dropped, and
+  resume in arrival order on un-freeze, as the specification requires.
+\item \textbf{slow-mode-on/off}: every intercepted call sleeps for a
+  random delay in $[500, 4000]$\,ms before being dispatched.
+\item \textbf{crash}: the replica first acknowledges the console and then
+  calls \code{System.exit} from a separate thread, so the console does not
+  see a broken RPC. A crashed replica loses all in-memory state,
+  including its Paxos log.
+\end{itemize}
+
+Placing the delays in one interceptor, rather than in each RPC handler,
+means that every message type (client requests, prepares, accepts,
+learns) is affected uniformly. New RPCs added in later steps inherit the
+debug behaviour without further code.
+
+\subsection{Why the baseline is unsafe}
+
+The provided phase-1 processor (\code{PhaseOneBogusProcessor}) has three
+defects: (i) it reports the ballot as accepted without reading the
+acceptor's answer, so a rejection is ignored; (ii) it returns ``done'' on
+the \emph{first} reply, so phase~1 never waits for a quorum; and (iii) it
+overwrites, rather than compares, the accepted value and ballot of each
+reply. Defect (ii) alone breaks safety: a leader that consults one
+acceptor that has accepted nothing concludes that no value was chosen,
+and proposes a new one for a slot that is already decided.
+
+We reproduce this with the required debug modes (Schedule~A, three
+replicas, leader of ballot $b$ is $S_{b \bmod 3}$):
+
+\begin{enumerate}\itemsep 0pt
+\item A client issues \code{sell 0 50} (request 101). It is decided in
+  slot~0, ballot~0, and executed by $S_0,S_1,S_2$.
+\item \code{debug crash 1}; $S_1$ is restarted with an empty log.
+\item \code{debug freeze 0}, \code{debug freeze 2}: only the empty $S_1$
+  can answer a prepare.
+\item \code{ballot 1 1} makes $S_1$ leader; a second client issues
+  \code{sell 3 50} (request 102).
+\item \code{debug un-freeze} on $S_0$ and $S_2$.
+\end{enumerate}
+
+With the baseline, $S_1$ completes phase~1 on its own empty reply,
+proposes 102 for slot~0, and executes it. Slot~0 is now \code{101} on
+$S_0$ and $S_2$ and \code{102} on $S_1$: the replicas have diverged.
+
+\subsection{Correct phase 1}
+
+\code{PhaseOneResponseProcessor} replaces the baseline. It
+(i)~collects promises in a \emph{set} of acceptor ids, so a duplicate
+reply cannot fill the quorum twice; (ii)~aborts the ballot on the first
+rejection, while remembering the highest ballot seen so the leader can
+move past it; and (iii)~for every slot, keeps the accepted value with the
+highest \emph{valballot} across the quorum. That value must be
+re-proposed in phase~2; only slots with no accepted value are free for
+new requests.
+
+One design point deserves mention: \code{getAccepted()} is
+\emph{derived} (no rejection \emph{and} $|\textit{promises}| \geq q$)
+instead of stored. The response collector never notifies the processor
+when an acceptor does not answer, so a stored flag initialised to
+\code{true}, as in the baseline, lets a leader proceed on a quorum it
+never obtained whenever acceptors are frozen or dead.
+
+In the scenario above, the fixed $S_1$ cannot complete phase~1 while
+$S_0$ and $S_2$ are frozen. After un-freeze its quorum includes $S_0$ or
+$S_2$, both of which report \code{(valballot 0, value 101)} for slot~0,
+so $S_1$ re-proposes 101 and agreement is preserved.
+
+The baseline processor is kept in the code base and selected with
+\code{-Ddidatrade.phase1=bogus}. Both processors extend a common
+\code{PhaseOneProcessor}, so the main loop is unchanged and the
+violation stays reproducible.
+
+\paragraph{Limitation exposed.} After the fix, the restarted $S_1$
+agrees that slot~0 holds request 101, but cannot \emph{execute} it: the
+consensus value is only a request id, and the request body was sent
+before the crash. A restarted replica therefore needs state transfer
+(Step~5) to catch up; we do not claim crash recovery.
+
+%-------------------------------------------------------------------------
+\section{Step 2: Multi-Paxos}
+\label{sec:step2}
+
+\TODO{C\'atia / Joana: multi-prepare over all slots from
+\code{next\_log\_entry} while the ballot is unchanged; pipelined phase 2
+with in-order execution; recovery of in-flight slots; scheduler changes
+for Schedule A/B/C.}
+
+%-------------------------------------------------------------------------
+% \section{Step 3: Fast Paxos}
+% \TODO{only if implemented}
+
+%-------------------------------------------------------------------------
+\section{Step 4: Causally Ordered Balance}
+\label{sec:step4}
+
+\subsection{Problem}
+
+In the baseline, \code{balance} is a log entry like any write. Each read
+costs a full consensus instance, and reads stall whenever no leader can
+make progress (e.g.\ the leader is frozen). Step~4 asks for a
+\code{balance} that is not totally ordered, but that respects causal
+order and reflects every operation the client has already observed.
+
+\subsection{Design}
+
+Because writes are totally ordered by the Paxos log, a replica's state is
+always a \emph{prefix} of the same sequence of commands. Its causal past
+is therefore fully described by one integer, the number of log entries
+it has executed. We do not need vector clocks.
+
+\begin{itemize}\itemsep 0pt
+\item Each replica maintains \code{executed\_index}, the length of the
+  executed prefix of the log.
+\item Every write reply carries \code{lastindex}, the position of that
+  write in the log (plus one). A \code{balance} reply carries the
+  replica's \code{executed\_index} when it read the value.
+\item The client keeps \code{last\_index}, the maximum \code{lastindex}
+  over every reply it has received, and sends it as \code{minindex} in
+  each \code{balance} request.
+\item A replica receiving \code{balance} waits (on a monitor that the
+  main loop signals after each execution) until
+  $\code{executed\_index} \geq \code{minindex}$, then reads the
+  balance \emph{locally}, without proposing anything.
+\end{itemize}
+
+As before, the client sends the request to all replicas and keeps the
+first reply. The read therefore completes as soon as \emph{any} replica
+that is sufficiently up to date answers.
+
+\subsection{Trade-offs}
+
+\begin{itemize}\itemsep 0pt
+\item \textbf{Cost.} A read costs one round trip and no Paxos messages.
+  It no longer occupies a log slot and does not depend on a working
+  leader: with the leader frozen, \code{balance} is still answered by the
+  other replicas.
+\item \textbf{Freshness.} Reads may be stale with respect to other
+  clients. A linearizable read would need either consensus or leases.
+\item \textbf{Lagging replicas.} A replica behind the client blocks the
+  request rather than answering with old state. This is safe, and it is
+  hidden by the first-reply policy as long as one replica is up to date.
+  The wait has no timeout, so a replica that never catches up (e.g.\ the
+  restarted replica of Section~\ref{sec:step1}) holds that call open
+  indefinitely.
+\end{itemize}
+
+%-------------------------------------------------------------------------
+\section{Validation and Live Reproduction}
+\label{sec:eval}
+
+Every scenario below is a Python script that starts real server
+processes, clients and the console, drives them through their terminals
+and checks the outcome in their logs. The scripts share one harness
+(\code{validation/lab.py}), wait on log events instead of fixed sleeps,
+and exit non-zero on any unexpected outcome. Build once with
+\code{mvn clean install}.
+
+\subsection{Step 1}
+
+\code{validation/step1/run.py} scripts the scenario of
+Section~\ref{sec:step1}:
+
+\begin{small}
+\begin{verbatim}
+python3 validation/step1/run.py bogus
+  -> slot 0: S0=101 S1=102 S2=101  (diverged)
+python3 validation/step1/run.py fixed
+  -> slot 0: S0=101 S1=101 S2=101  (agreement)
+\end{verbatim}
+\end{small}
+
+\noindent\textbf{By hand.} Use one terminal per process. Start the
+replicas from \code{server/}, the client from \code{app/} and the console
+from \code{console/}. To get the bogus run, prefix each server command
+with \code{MAVEN\_OPTS="-Ddidatrade.phase1=bogus"}.
+
+\begin{small}
+\begin{verbatim}
+# server/, i = 0,1,2
+mvn exec:java -Dexec.args="9200 i A"
+# app/
+mvn exec:java -Dexec.args="1 localhost 9200 A"
+# console/
+mvn exec:java -Dexec.args="localhost 9200 A"
+
+app>     sell 0 50          # slot 0 = 101
+console> debug crash 1
+         # restart S1 in its terminal
+console> debug freeze 0
+console> debug freeze 2
+console> ballot 1 1
+app>     sell 3 50          # request 201
+console> debug un-freeze 0
+console> debug un-freeze 2
+\end{verbatim}
+\end{small}
+
+Then compare the line \code{Log entry with number 0 has been decided
+with command id = ...} in the three server terminals. With the bogus
+processor, $S_1$ prints \code{recovered slots = []} and decides the new
+request for slot~0. With the fix, it prints \code{recovered slots = [0]}
+and \code{Sending phase 2 for slot 0 in ballot 1, value 101}.
+
+\subsection{Step 4}
+
+\code{python3 validation/step4/run.py} runs the scenario below against
+three replicas, a client and the console. To run it by hand, start the processes as in Step~1
+(without the bogus flag). Every replica begins with users $0..9$, each
+holding 10 currency and 10 items.
+
+\begin{small}
+\begin{verbatim}
+app>     sell 0 50
+app>     buy 1 50
+app>     balance 0          # 15
+console> debug freeze 0
+app>     balance 1          # 5
+console> debug un-freeze 0
+console> debug freeze 2
+app>     sell 2 50
+app>     buy 3 50
+console> debug un-freeze 2
+app>     balance 2          # 15, never 10
+\end{verbatim}
+\end{small}
+
+\code{balance 0} returns 15, and no server prints \code{Setting response
+for command} for it: the read did not go through Paxos. With the leader
+$S_0$ frozen, \code{balance 1} is still answered by $S_1$ and $S_2$.
+For the last read, $S_2$ has missed both writes. Its terminal prints
+\code{minindex 4} and waits until it has executed slots 2 and 3. Then it
+prints \code{Balance for reqid 701 is 15 at index 4}. Neither the client
+nor $S_2$ ever shows the old balance of 10.
+
+\TODO{Validation of Step 2 (\code{validation/part1}).}
+
+%-------------------------------------------------------------------------
+\section{Conclusion}
+
+\TODO{Short summary and known limitations: no state transfer for
+restarted replicas; balance wait has no timeout.}
+
+%-------------------------------------------------------------------------
+\section*{Authorship Declaration}
+\small
+We, Filip Dubj\'ak (n.\textsuperscript{o} 120560, MEIC), C\'atia Zharko
+(n.\textsuperscript{o} 109972, MEIC) and Joana Cardoso
+(n.\textsuperscript{o} 109864, MEIC), hereby declare, on our honor, that
+the work entitled ``dida-trade'', carried out as part of the Design and
+Implementation of Distributed Applications course, resulted from the
+active participation of the following group members. The individual
+contributions were:
+
+\begin{itemize}\itemsep 0pt
+\item \textbf{Filip Dubj\'ak}: debug modes; demonstration that the
+  baseline phase 1 is unsafe and its correction (Step 1); scheduler
+  updates for Multi-Paxos; causally ordered \code{balance} (Step 4) and
+  its validation.
+\item \textbf{C\'atia Zharko}: \TODO{e.g. Multi-Paxos multi-prepare
+  across slots.}
+\item \textbf{Joana Cardoso}: \TODO{e.g. pipelined phase 2 with ordered
+  execution, recovery, review and integration, validation of Steps 1--2.}
+\end{itemize}
+
+We declare that this work is original and complies with the applicable
+academic regulations.
+
+Lisbon, \TODO{date}
+
+Signatures: \TODO{}
+
+\section*{AI Usage Statement}
+All design choices and the code have been by us. The following tools
+have been used: Claude and ChatGPT (analysis of the assignment, creation
+of tests to verify correct behaviour, support during compilation and
+debugging, \TODO{confirm:} drafting of report text); Microsoft Copilot
+(clarification of Paxos, Multi-Paxos and Multi-Prepare concepts from the
+course materials).
+
+\end{document}
