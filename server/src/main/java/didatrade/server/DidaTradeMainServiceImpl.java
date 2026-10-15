@@ -177,8 +177,12 @@ public class DidaTradeMainServiceImpl
     System.out.println("reqid " + reqid + " userid " + uid + " minindex " + min_index);
     this.server_state.waitForExecutedIndex(min_index);
 
-    int balance = this.server_state.trade_manager.balance(uid);
-    int last_index = this.server_state.getExecutedIndex();
+    int balance;
+    int last_index;
+    synchronized (this.server_state) {
+      balance = this.server_state.trade_manager.balance(uid);
+      last_index = this.server_state.getExecutedIndex();
+    }
     boolean result = (balance != -1);
 
     // for debug purposes

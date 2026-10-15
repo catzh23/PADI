@@ -329,24 +329,27 @@ public class MainLoop implements Runnable {
 
   private void executeReadyEntries() {
     while (true) {
-      PaxosInstance entry = this.server_state.paxos_log.getEntry(this.next_log_entry);
-      if (entry == null || !entry.decided) return;
-      if (entry.command_id != PaxosInstance.NO_OP
-          && this.server_state.req_history.getIfProcessed(entry.command_id) == null) {
-        RequestRecord request = this.server_state.req_history.getIfPending(entry.command_id);
-        if (request == null) return;
-        execute(entry, request);
+      // Publish each command's effects and its executed index together.
+      synchronized (this.server_state) {
+        PaxosInstance entry = this.server_state.paxos_log.getEntry(this.next_log_entry);
+        if (entry == null || !entry.decided) return;
+        if (entry.command_id != PaxosInstance.NO_OP
+            && this.server_state.req_history.getIfProcessed(entry.command_id) == null) {
+          RequestRecord request = this.server_state.req_history.getIfPending(entry.command_id);
+          if (request == null) return;
+          execute(entry, request);
+        }
+        System.out.println(
+            "Log entry with number "
+                + this.next_log_entry
+                + " has been decided with command id = "
+                + entry.command_id);
+        this.prepared_values.remove(this.next_log_entry);
+        this.in_flight.remove(this.next_log_entry);
+        this.retry_after.remove(this.next_log_entry);
+        this.next_log_entry++;
+        this.server_state.setExecutedIndex(this.next_log_entry);
       }
-      System.out.println(
-          "Log entry with number "
-              + this.next_log_entry
-              + " has been decided with command id = "
-              + entry.command_id);
-      this.prepared_values.remove(this.next_log_entry);
-      this.in_flight.remove(this.next_log_entry);
-      this.retry_after.remove(this.next_log_entry);
-      this.next_log_entry++;
-      this.server_state.setExecutedIndex(this.next_log_entry);
     }
   }
 
@@ -395,8 +398,8 @@ public class MainLoop implements Runnable {
             + next_entry.command_id
             + " with result = "
             + result);
-    request_record.setResponse(result);
     request_record.setLogIndex(this.next_log_entry + 1);
+    request_record.setResponse(result);
     this.server_state.req_history.moveToProcessed(request_record.getId());
   }
 }
