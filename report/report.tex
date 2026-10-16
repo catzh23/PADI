@@ -1,342 +1,294 @@
-\documentclass[times, 10pt,twocolumn]{article}
+\documentclass[times,10pt,twocolumn]{article}
 \usepackage{latex8}
 \usepackage{times}
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
-\usepackage{booktabs}
 \usepackage{url}
-
 \pagestyle{empty}
-
-% Small inline helpers.
 \newcommand{\code}[1]{\texttt{\small #1}}
 \newcommand{\TODO}[1]{\textbf{[TODO: #1]}}
 
 \begin{document}
-
 \title{dida-trade: A Trading Service Replicated with Vertical Paxos}
-
 \author{Filip Dubj\'ak, n.\textsuperscript{o} 120560 \and
         C\'atia Zharko, n.\textsuperscript{o} 109972 \and
         Joana Cardoso, n.\textsuperscript{o} 109864 \\[4pt]
         Instituto Superior T\'ecnico, Universidade de Lisboa}
-
 \maketitle
 \thispagestyle{empty}
 
 \begin{abstract}
-\TODO{3--5 sentences once all sections are in: which steps we reached
-(1--4), the main design choices (quorum-based phase 1, Multi-Paxos with
-pipelined phase 2, causal \code{balance} read from a single replica), and
-how each is validated.}
+We extended dida-trade with quorum validation, Multi-Paxos recovery and
+pipelining, Fast Paxos, causal balance reads and dynamic membership.
+The implementation separates decisions from ordered execution and transfers
+accepted history before activating a new acceptor group. Controlled gRPC
+checks and live scenarios exercise communication failures, concurrent
+proposals, read races and interrupted transfers.
 \end{abstract}
 
-%-------------------------------------------------------------------------
 \section{Introduction}
+Writes are ordered through a replicated Paxos log, while balance reads use
+local state subject to the client's observed history. This report describes
+the implementation choices for Steps~1--5, the defects found during review,
+and the tests used to check the resulting behaviour.
 
-dida-trade replicates a small trading state machine over a set of
-replicas, using one Paxos instance per log slot. Writes (\code{populate},
-\code{add}, \code{sell}, \code{buy}) are totally ordered by consensus and
-executed by every replica in slot order. This report covers the steps we
-implemented: completing the baseline with a correct phase~1
-(Step~1, Section~\ref{sec:step1}), Multi-Paxos (Step~2,
-Section~\ref{sec:step2}) \TODO{Step 3 if included}, and a causally
-ordered \code{balance} that bypasses Paxos (Step~4,
-Section~\ref{sec:step4}). Section~\ref{sec:eval} shows how each property
-is checked against the running system.
-
-%-------------------------------------------------------------------------
-\section{Step 1: Debug Modes and a Correct Phase 1}
+\section{Step 1: Baseline Corrections and Debug Modes}
 \label{sec:step1}
 
 \subsection{Debug modes}
+A gRPC interceptor applies debug modes to client and Paxos calls. The console
+service is excluded so it can unfreeze a replica. \code{freeze} blocks incoming
+calls on a monitor; \code{un-freeze} releases them without guaranteeing arrival
+order. Slow mode adds a random delay of 500--4000\,ms per intercepted call.
+\code{crash} schedules process termination after sending the console reply.
+Replica state is held in memory and is lost on restart.
 
-All debug modes except \code{crash} are implemented by a single gRPC
-\code{ServerInterceptor} (\code{DebugInterceptor}) wrapped around the
-client-facing and the Paxos services of each replica. The console
-service is deliberately \emph{not} intercepted, so a frozen or slow
-replica still obeys the console.
+\subsection{Phase 1 and the baseline demonstration}
+The original \code{PhaseOneBogusProcessor} ignores rejections, finishes after
+the first reply and overwrites the reported value without comparing accepted
+ballots. The replacement counts distinct promises, stops on rejection and
+recovers the value with the highest accepted ballot for each classic slot.
+Success requires positive quorum evidence: failed or pending calls are not votes.
 
-\begin{itemize}\itemsep 0pt
-\item \textbf{freeze / un-freeze}: an incoming call blocks inside the
-  interceptor on a monitor until \code{un-freeze} calls
-  \code{notifyAll()}. Requests are therefore delayed, never dropped, and
-  resume in arrival order on un-freeze, as the specification requires.
-\item \textbf{slow-mode-on/off}: every intercepted call sleeps for a
-  random delay in $[500, 4000]$\,ms before being dispatched.
-\item \textbf{crash}: the replica first acknowledges the console and then
-  calls \code{System.exit} from a separate thread, so the console does not
-  see a broken RPC. A crashed replica loses all in-memory state,
-  including its Paxos log.
-\end{itemize}
+The demonstration first decides request~101 in slot~0 on three replicas.
+It crashes and restarts $S_1$ with an empty log, freezes $S_0,S_2$, and starts
+ballot~1 at $S_1$ with request~102 pending. The bogus processor completes
+preparation from its own empty reply. After the others unfreeze, $S_1$
+executes~102 while $S_0,S_2$ retain~101. The fixed processor waits for a quorum
+and recovers~101. This checks agreement, not crash recovery: the restarted
+replica still lacks the original command body in this Schedule~A experiment.
+The original processor remains selectable through
+\code{-Ddidatrade.phase1=bogus}.
 
-Placing the delays in one interceptor, rather than in each RPC handler,
-means that every message type (client requests, prepares, accepts,
-learns) is affected uniformly. New RPCs added in later steps inherit the
-debug behaviour without further code.
+\subsection{Phase 2 also needs positive votes}
+The phase-2 processor initially reported success unless it received an
+explicit rejection. Communication failures could therefore finish collection
+without a quorum but still allow the leader to decide the slot. Its result
+is now derived from no recorded rejection and at least $q$ distinct positive
+acceptances. Duplicate replies do not increase the count. A failed round
+is retried, or abandoned if a higher ballot is reported. Learners also count
+distinct acceptor ids, using the quorum required by the classic or Fast path.
 
-\subsection{Why the baseline is unsafe}
-
-The provided phase-1 processor (\code{PhaseOneBogusProcessor}) has three
-defects: (i) it reports the ballot as accepted without reading the
-acceptor's answer, so a rejection is ignored; (ii) it returns ``done'' on
-the \emph{first} reply, so phase~1 never waits for a quorum; and (iii) it
-overwrites, rather than compares, the accepted value and ballot of each
-reply. Defect (ii) alone breaks safety: a leader that consults one
-acceptor that has accepted nothing concludes that no value was chosen,
-and proposes a new one for a slot that is already decided.
-
-We reproduce this with the required debug modes (Schedule~A, three
-replicas, leader of ballot $b$ is $S_{b \bmod 3}$):
-
-\begin{enumerate}\itemsep 0pt
-\item A client issues \code{sell 0 50} (request 101). It is decided in
-  slot~0, ballot~0, and executed by $S_0,S_1,S_2$.
-\item \code{debug crash 1}; $S_1$ is restarted with an empty log.
-\item \code{debug freeze 0}, \code{debug freeze 2}: only the empty $S_1$
-  can answer a prepare.
-\item \code{ballot 1 1} makes $S_1$ leader; a second client issues
-  \code{sell 3 50} (request 102).
-\item \code{debug un-freeze} on $S_0$ and $S_2$.
-\end{enumerate}
-
-With the baseline, $S_1$ completes phase~1 on its own empty reply,
-proposes 102 for slot~0, and executes it. Slot~0 is now \code{101} on
-$S_0$ and $S_2$ and \code{102} on $S_1$: the replicas have diverged.
-
-\subsection{Correct phase 1}
-
-\code{PhaseOneResponseProcessor} replaces the baseline. It
-(i)~collects promises in a \emph{set} of acceptor ids, so a duplicate
-reply cannot fill the quorum twice; (ii)~aborts the ballot on the first
-rejection, while remembering the highest ballot seen so the leader can
-move past it; and (iii)~for every slot, keeps the accepted value with the
-highest \emph{valballot} across the quorum. That value must be
-re-proposed in phase~2; only slots with no accepted value are free for
-new requests.
-
-One design point deserves mention: \code{getAccepted()} is
-\emph{derived} (no rejection \emph{and} $|\textit{promises}| \geq q$)
-instead of stored. The response collector never notifies the processor
-when an acceptor does not answer, so a stored flag initialised to
-\code{true}, as in the baseline, lets a leader proceed on a quorum it
-never obtained whenever acceptors are frozen or dead.
-
-In the scenario above, the fixed $S_1$ cannot complete phase~1 while
-$S_0$ and $S_2$ are frozen. After un-freeze its quorum includes $S_0$ or
-$S_2$, both of which report \code{(valballot 0, value 101)} for slot~0,
-so $S_1$ re-proposes 101 and agreement is preserved.
-
-The baseline processor is kept in the code base and selected with
-\code{-Ddidatrade.phase1=bogus}. Both processors extend a common
-\code{PhaseOneProcessor}, so the main loop is unchanged and the
-violation stays reproducible.
-
-\paragraph{Limitation exposed.} After the fix, the restarted $S_1$
-agrees that slot~0 holds request 101, but cannot \emph{execute} it: the
-consensus value is only a request id, and the request body was sent
-before the crash. A restarted replica therefore needs state transfer
-(Step~5) to catch up; we do not claim crash recovery.
-
-%-------------------------------------------------------------------------
 \section{Step 2: Multi-Paxos}
 \label{sec:step2}
 
-\TODO{C\'atia / Joana: multi-prepare over all slots from
-\code{next\_log\_entry} while the ballot is unchanged; pipelined phase 2
-with in-order execution; recovery of in-flight slots; scheduler changes
-for Schedule A/B/C.}
+\subsection{Multi-prepare and recovery}
+Reusing phase~1 across slots requires recovering their history, not merely
+checking that the ballot is unchanged. We extended the protocol reply with
+a finite list of accepted entries: slot, value and accepted ballot.
+For fixed membership, the leader requests the suffix from its first
+unexecuted slot. The promise covers all slots; the reply lists only existing
+acceptances. An omitted slot has no acceptance at that replica when the
+snapshot is taken.
 
-%-------------------------------------------------------------------------
-% \section{Step 3: Fast Paxos}
-% \TODO{only if implemented}
+Recovery selects the highest accepted ballot per slot. Classic acceptances
+identify the value to preserve; for Fast acceptances, recovery also considers
+vote counts at that ballot and the scheduler's recovery threshold. Local
+accepted state is kept separate from learned decisions, so an acceptor reports
+its own votes. Preparation is reused until the ballot changes. Holes before
+recovered entries receive pending requests, or no-ops when none are available.
 
-%-------------------------------------------------------------------------
+\subsection{Pipelining and execution}
+\code{MainLoop} can have phase~2 running for several slots simultaneously.
+A window of 16 slots from the first unexecuted entry bounds outstanding work.
+Decisions may finish out of order, but execution stops at the first undecided
+slot or missing command body. Replies to clients follow execution, and the
+window advances with the executed prefix.
+
+Retries retain the same value for a slot within a ballot. Late callbacks from
+abandoned ballots cannot decide the new attempt. Already processed request
+ids are not executed again.
+
+A single main-loop thread executes commands. RPC callbacks and relevant
+incoming messages call \code{wakeup()}, while the loop uses \code{wait()}
+without a polling timeout. Failed phase~1, phase~2 and \code{any} rounds
+schedule a wakeup after 250\,ms, so retries do not depend on new traffic.
+Notifications occur outside the server-state lock to avoid reversing the
+loop's lock order. Automatic activation also makes the loop continue.
+
+\section{Step 3: Fast Paxos}
+\label{sec:step3}
+\TODO{C\'atia: implementation and validation of Fast Paxos.}
+
 \section{Step 4: Causally Ordered Balance}
 \label{sec:step4}
 
-\subsection{Problem}
+\subsection{Local reads with a causal lower bound}
+Each replica maintains \code{executed\_index}, the length of its executed log
+prefix. Write replies include their slot index plus one; balance replies
+include the index associated with the returned state. The client retains
+the maximum index observed and sends it as \code{minindex} with each read.
+A replica waits until its executed index reaches that bound, then reads
+locally without Paxos. The client contacts all replicas and uses the first
+reply, so one sufficiently up-to-date replica is enough.
 
-In the baseline, \code{balance} is a log entry like any write. Each read
-costs a full consensus instance, and reads stall whenever no leader can
-make progress (e.g.\ the leader is frozen). Step~4 asks for a
-\code{balance} that is not totally ordered, but that respects causal
-order and reflects every operation the client has already observed.
+\subsection{Correct publication of results}
+Two races required correction. First, a write's index must be stored before
+its response is marked ready; otherwise the client can receive success with
+an old index and later accept a stale read. Second, the balance and its index
+must describe the same state. Command execution and advancement of the
+executed index now hold the server-state lock; the read takes the same lock
+to obtain both fields after waiting for its lower bound.
 
-\subsection{Design}
+Reads use no log slot and can finish while the leader is frozen. They may
+still be stale relative to other clients: this is causal ordering, not
+linearizability. A replica that never catches up keeps its read RPC waiting,
+since the wait has no timeout.
 
-Because writes are totally ordered by the Paxos log, a replica's state is
-always a \emph{prefix} of the same sequence of commands. Its causal past
-is therefore fully described by one integer, the number of log entries
-it has executed. We do not need vector clocks.
+\section{Step 5: Dynamic Membership}
+\label{sec:step5}
 
-\begin{itemize}\itemsep 0pt
-\item Each replica maintains \code{executed\_index}, the length of the
-  executed prefix of the log.
-\item Every write reply carries \code{lastindex}, the position of that
-  write in the log (plus one). A \code{balance} reply carries the
-  replica's \code{executed\_index} when it read the value.
-\item The client keeps \code{last\_index}, the maximum \code{lastindex}
-  over every reply it has received, and sends it as \code{minindex} in
-  each \code{balance} request.
-\item A replica receiving \code{balance} waits (on a monitor that the
-  main loop signals after each execution) until
-  $\code{executed\_index} \geq \code{minindex}$, then reads the
-  balance \emph{locally}, without proposing anything.
-\end{itemize}
+\subsection{Transfer before activation}
+Schedule~C changes acceptors from $G_0=\{S_0,\ldots,S_4\}$ to
+$G_1=\{S_2,\ldots,S_6\}$. A majority of the new group alone need not know
+what the old group chose. We use preparation followed by activation,
+inspired by Vertical Paxos~II. The console acts as master and retains the
+last completed configuration.
 
-As before, the client sends the request to all replicas and keeps the
-first reply. The read therefore completes as soon as \emph{any} replica
-that is sufficiently up to date answers.
+For manual changes to ballots~2--4, \code{ballot} supplies the recovery
+reference. Phase~1 reads its acceptors from slot~0, including slots already
+executed by the leader: these must still reach the new acceptors. Recovery
+uses each slot's accepted ballot to apply the classic or Fast rule.
+The leader then transfers the history through pipelined classic phase~2,
+even if the new ballot will later use Fast Paxos. Holes receive no-ops;
+new client commands are held until activation.
 
-\subsection{Trade-offs}
+Transferred values and learner notifications include command bodies, allowing
+replicas that missed the client RPC to execute the history. Missing bodies
+cause preparation to retry. Completion requires a positive new-group quorum
+for every transferred slot; local execution or learning is insufficient.
+An empty history completes after phase~1. The console can then send
+\code{activate} with the explicit ballot. Stale or premature activation is
+rejected. Until activation, the leader sends neither new client proposals nor
+\code{any}. A late client RPC reuses its transferred request's stored result.
 
-\begin{itemize}\itemsep 0pt
-\item \textbf{Cost.} A read costs one round trip and no Paxos messages.
-  It no longer occupies a log slot and does not depend on a working
-  leader: with the leader frozen, \code{balance} is still answered by the
-  other replicas.
-\item \textbf{Freshness.} Reads may be stale with respect to other
-  clients. A linearizable read would need either consensus or leases.
-\item \textbf{Lagging replicas.} A replica behind the client blocks the
-  request rather than answering with old state. This is safe, and it is
-  hidden by the first-reply policy as long as one replica is up to date.
-  The wait has no timeout, so a replica that never catches up (e.g.\ the
-  restarted replica of Section~\ref{sec:step1}) holds that call open
-  indefinitely.
-\end{itemize}
+\subsection{Interrupted transfers}
+A transfer can decide some slots before reporting completion. We reproduced
+an error where ballot~2 decided request~201 at $S_5$, was interrupted, and
+ballot~3 recovered only from $G_0$, deciding request~101 at $S_4,S_6$ for
+the same slot. The console's old reference did not include the partial
+transfer's decisions.
 
-%-------------------------------------------------------------------------
-\section{Validation and Live Reproduction}
+Recovery now reads both groups when the previous ballot's acceptors differ
+from the reference group. It requires three promises from $G_0$ and three
+from $G_1$, not a majority of their union. A shared acceptor counts once in
+each group; duplicates do not add votes. Recovery retains the highest accepted
+ballot per slot across the collected replies and applies its recovery rule.
+Any classic transfer decision used three acceptors in $G_1$, so the new read
+quorum of three in that group must intersect it.
+
+In Schedule~C this additional quorum is needed for ballots~3 or~4 when the
+reference remains~0 or~1. With a completed new-group reference, recovery no
+longer requires removed acceptors $S_0,S_1$.
+
+\subsection{Automatic recovery and limits}
+A collision in Fast ballot~2 starts ballot~3 automatically. Fast votes imply
+that ballot~2 was activated, and ballot~3 uses the same group. Its leader
+therefore recovers from configuration~2 and activates after recovery quorums
+complete. Initial membership changes and manually started preparations still
+require explicit activation. An unavailable scheduled leader requires a
+manual ballot change.
+
+Replica state and the console's reference are not persistent. The protocol
+covers the prescribed membership changes, not arbitrary restart recovery.
+Transfer reads the whole prefix; its cost grows with the log because no
+snapshots or truncation are implemented.
+
+\section{Validation}
 \label{sec:eval}
+Validation combines controlled Java checks with real gRPC services and live
+server/client scenarios. Build with \code{mvn clean install}; reproduction
+commands and logs are documented under \code{validation/}.
 
-Every scenario below is a Python script that starts real server
-processes, clients and the console, drives them through their terminals
-and checks the outcome in their logs. The scripts share one harness
-(\code{validation/lab.py}), wait on log events instead of fixed sleeps,
-and exit non-zero on any unexpected outcome. Build once with
-\code{mvn clean install}.
+\paragraph{Baseline and Multi-Paxos.}
+The \code{bogus} and \code{fixed} modes of \code{validation/step1/run.py}
+reproduce divergence and preservation respectively. The \code{processors},
+\code{multiprepare} and \code{pipeline} scenarios in
+\code{validation/part1/run.py} check quorum evidence, duplicate replies,
+recovery across slots and overlapping phase~2. Peers hold an earlier slot's
+replies while a later slot decides; execution must still wait. Further checks
+cover old callbacks, the window bound, stable retry values, untimed waiting
+and retries without new traffic. The debug test switches to classic ballot~1
+before crashing a replica: two survivors suffice there, but not in
+Schedule~A's Fast ballot~0.
 
-\subsection{Step 1}
+\paragraph{Causal balance.}
+\code{validation/step4/run.py} checks reads without log entries, reads while
+the leader is frozen, and a lagging replica waiting for the client's index.
+\code{CausalChecks.java} pauses a write between its balance change and index
+publication: a concurrent read must block and then return a matching pair.
+It also checks that the write index is present when the response becomes ready.
 
-\code{validation/step1/run.py} scripts the scenario of
-Section~\ref{sec:step1}:
+\paragraph{Membership.}
+\code{validation/step5/run.py} withholds old and new quorums, checks early
+activation rejection, transfers missing bodies, reuses late-client responses
+and continues after removing $S_0,S_1$. A regression test reconstructs the
+interrupted-transfer divergence and checks that the actual leader preserves
+request~201. Old-only and new-only recovery quorums are rejected. Another test
+provokes a ballot~2 collision with removed replicas unavailable and recovery
+writes initially failing: new requests wait for quorums and then resume
+without console commands. These checks passed; they cover specific executions
+rather than proving correctness for every message ordering.
 
-\begin{small}
-\begin{verbatim}
-python3 validation/step1/run.py bogus
-  -> slot 0: S0=101 S1=102 S2=101  (diverged)
-python3 validation/step1/run.py fixed
-  -> slot 0: S0=101 S1=101 S2=101  (agreement)
-\end{verbatim}
-\end{small}
-
-\noindent\textbf{By hand.} Use one terminal per process. Start the
-replicas from \code{server/}, the client from \code{app/} and the console
-from \code{console/}. To get the bogus run, prefix each server command
-with \code{MAVEN\_OPTS="-Ddidatrade.phase1=bogus"}.
-
-\begin{small}
-\begin{verbatim}
-# server/, i = 0,1,2
-mvn exec:java -Dexec.args="9200 i A"
-# app/
-mvn exec:java -Dexec.args="1 localhost 9200 A"
-# console/
-mvn exec:java -Dexec.args="localhost 9200 A"
-
-app>     sell 0 50          # slot 0 = 101
-console> debug crash 1
-         # restart S1 in its terminal
-console> debug freeze 0
-console> debug freeze 2
-console> ballot 1 1
-app>     sell 3 50          # request 201
-console> debug un-freeze 0
-console> debug un-freeze 2
-\end{verbatim}
-\end{small}
-
-Then compare the line \code{Log entry with number 0 has been decided
-with command id = ...} in the three server terminals. With the bogus
-processor, $S_1$ prints \code{recovered slots = []} and decides the new
-request for slot~0. With the fix, it prints \code{recovered slots = [0]}
-and \code{Sending phase 2 for slot 0 in ballot 1, value 101}.
-
-\subsection{Step 4}
-
-\code{python3 validation/step4/run.py} runs the scenario below against
-three replicas, a client and the console. To run it by hand, start the processes as in Step~1
-(without the bogus flag). Every replica begins with users $0..9$, each
-holding 10 currency and 10 items.
-
-\begin{small}
-\begin{verbatim}
-app>     sell 0 50
-app>     buy 1 50
-app>     balance 0          # 15
-console> debug freeze 0
-app>     balance 1          # 5
-console> debug un-freeze 0
-console> debug freeze 2
-app>     sell 2 50
-app>     buy 3 50
-console> debug un-freeze 2
-app>     balance 2          # 15, never 10
-\end{verbatim}
-\end{small}
-
-\code{balance 0} returns 15, and no server prints \code{Setting response
-for command} for it: the read did not go through Paxos. With the leader
-$S_0$ frozen, \code{balance 1} is still answered by $S_1$ and $S_2$.
-For the last read, $S_2$ has missed both writes. Its terminal prints
-\code{minindex 4} and waits until it has executed slots 2 and 3. Then it
-prints \code{Balance for reqid 701 is 15 at index 4}. Neither the client
-nor $S_2$ ever shows the old balance of 10.
-
-\TODO{Validation of Step 2 (\code{validation/part1}).}
-
-%-------------------------------------------------------------------------
 \section{Conclusion}
+The implementation supports concurrent consensus with ordered execution,
+causal reads without Paxos and transfer of history across Schedule~C's
+membership changes. The main corrections ensure that progress depends on
+positive quorum evidence and that recovery includes decisions made during
+unfinished transfers. Controlled tests exercise these failure cases and the
+read-publication races. The remaining limits are in-memory state, full-prefix
+transfer and indefinite waits for replicas that cannot catch up; durable
+restart recovery is outside this implementation.
 
-\TODO{Short summary and known limitations: no state transfer for
-restarted replicas; balance wait has no timeout.}
+\section*{Authorship declaration}
 
-%-------------------------------------------------------------------------
-\section*{Authorship Declaration}
-\small
-We, Filip Dubj\'ak (n.\textsuperscript{o} 120560, MEIC), C\'atia Zharko
-(n.\textsuperscript{o} 109972, MEIC) and Joana Cardoso
-(n.\textsuperscript{o} 109864, MEIC), hereby declare, on our honor, that
-the work entitled ``dida-trade'', carried out as part of the Design and
-Implementation of Distributed Applications course, resulted from the
-active participation of the following group members. The individual
-contributions were:
+We,
 
 \begin{itemize}\itemsep 0pt
-\item \textbf{Filip Dubj\'ak}: debug modes; demonstration that the
-  baseline phase 1 is unsafe and its correction (Step 1); scheduler
-  updates for Multi-Paxos; causally ordered \code{balance} (Step 4) and
-  its validation.
-\item \textbf{C\'atia Zharko}: \TODO{e.g. Multi-Paxos multi-prepare
-  across slots.}
-\item \textbf{Joana Cardoso}: \TODO{e.g. pipelined phase 2 with ordered
-  execution, recovery, review and integration, validation of Steps 1--2.}
+\item Filip Dubják, n.º 120560, MEIC
+\item Cátia Zharko, n.º 109972, MEIC
+\item Joana Cardoso, n.º 109864, MEIC
 \end{itemize}
 
-We declare that this work is original and complies with the applicable
-academic regulations.
+We hereby declare, on our honor, that the work entitled \textbf{"dida-trade — Parts 1 to 5"},
+carried out as part of the \textbf{Design and Implementation of Distributed Applications}
+course, resulted from the active participation of the following group members.
+The individual contributions were:
 
-Lisbon, \TODO{date}
+\begin{itemize}\itemsep 0pt
+\item \textbf{Filip Dubják:} Initial implementation of Part 1, including the baseline correction, debug modes and the demonstration of the incorrect phase 1; Implementation of Part 4- causal balance reads.
+\item \textbf{Cátia Zharko:} Initial optimization to reuse phase 1 within a ballot in Part 2; implementation and corrections of Fast Paxos in Part 3.
+\item \textbf{Joana Cardoso:} Phase 2 quorum validation; Multi-prepare recovery and overlapping phase 2 proposals with ordered execution; corrections and validation of causal balance reads; implementation and validation of Part 5.
+\end{itemize}
 
-Signatures: \TODO{}
 
+We declare that this work is original and complies with the applicable academic regulations.
+
+Lisbon, 16/10/2026
+
+\begin{itemize}\itemsep 0pt
+\item Cátia Zharko
+\item Filip Dubják
+\item Joana Cardoso
+\end{itemize}
 \section*{AI Usage Statement}
-All design choices and the code have been by us. The following tools
-have been used: Claude and ChatGPT (analysis of the assignment, creation
-of tests to verify correct behaviour, support during compilation and
-debugging, \TODO{confirm:} drafting of report text); Microsoft Copilot
-(clarification of Paxos, Multi-Paxos and Multi-Prepare concepts from the
-course materials).
 
+All design choices and the code have been by us.
+
+The following AI tools were used during the development of this project:
+
+\begin{itemize}\itemsep 0pt
+\item \textbf{Claude:} analysis of the assignment, test creation, and compilation and debugging support. Suggestions for approaches and occasional code snippets that were selectively adopted;
+\item \textbf{ChatGPT / Codex:} explanations of the course concepts; review of the implementation; creation and execution of tests; debugging; assistance with documentation and commit descriptions; Suggestions for approaches and occasional code snippets that were selectively adopted; Assistance with drafting and refining the project report;
+\item \textbf{Microsoft Copilot:} clarification of Paxos, Multi-Paxos, and Multi-Prepare concepts based on the course materials; assistance in understanding distributed systems algorithms
+\end{itemize}
+
+
+Team members:
+
+\begin{itemize}\itemsep 0pt
+\item Cátia Zharko
+\item Filip Dubjak
+\item Joana Cardoso
+\end{itemize}
 \end{document}
