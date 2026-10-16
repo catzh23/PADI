@@ -28,7 +28,8 @@ public class DidaTradePaxosServiceImpl
       int value = entry.accepted_value;
       int valballot = entry.write_ballot;
 
-      if (ballot >= this.server_state.getCurrentBallot()) {
+      if (this.server_state.scheduler.validBallot(ballot)
+          && ballot >= this.server_state.getCurrentBallot()) {
         accepted = true;
         this.server_state.setCurrentBallot(ballot);
         entry.read_ballot = ballot;
@@ -51,9 +52,14 @@ public class DidaTradePaxosServiceImpl
       response_builder.setValballot(valballot);
       response_builder.setMaxballot(maxballot);
 
-      if (accepted)
-        response_builder.addAllAcceptedinstances(
-            this.server_state.paxos_log.acceptedInstances(instance));
+      if (accepted) {
+        for (var saved : this.server_state.paxos_log.acceptedInstances(instance)) {
+          var builder = saved.toBuilder();
+          RequestRecord record = this.server_state.req_history.getIfExists(saved.getValue());
+          if (record != null) builder.setCommand(record.getRequest().toMessage());
+          response_builder.addAcceptedinstances(builder);
+        }
+      }
       response = response_builder.build();
     }
 
@@ -77,8 +83,13 @@ public class DidaTradePaxosServiceImpl
 
     synchronized (this.server_state) {
       PaxosInstance entry = this.server_state.paxos_log.testAndSetEntry(instance);
-      if (ballot >= this.server_state.getCurrentBallot()) {
+      if (this.server_state.scheduler.validBallot(ballot)
+          && this.server_state.scheduler.isacceptor(this.server_state.my_id, ballot)
+          && ballot >= this.server_state.getCurrentBallot()) {
         accepted = true;
+        if (request.hasCommand())
+          this.server_state.req_history.rememberTransferred(
+              value, DidaTradeCommand.fromMessage(request.getCommand()));
         entry.accepted_value = value;
         entry.write_ballot = ballot;
         entry.accepted_fast = false;
@@ -114,7 +125,9 @@ public class DidaTradePaxosServiceImpl
     int maxballot = ballot;
 
     synchronized (this.server_state) {
-      if (ballot >= this.server_state.getCurrentBallot()) {
+      if (this.server_state.scheduler.validBallot(ballot)
+          && this.server_state.scheduler.isacceptor(this.server_state.my_id, ballot)
+          && ballot >= this.server_state.getCurrentBallot()) {
         accepted = true;
         this.server_state.setAnyBallot(ballot);
         this.server_state.setAnyFrom(instance);
@@ -152,10 +165,16 @@ public class DidaTradePaxosServiceImpl
     synchronized (this.server_state) {
       PaxosInstance entry = this.server_state.paxos_log.testAndSetEntry(instance);
       boolean member =
-          this.server_state.scheduler.acceptors(ballot).contains(request.getServerid());
+          this.server_state.scheduler.validBallot(ballot)
+              && this.server_state.scheduler.acceptors(ballot).contains(request.getServerid());
       if (member) {
         wakeup = ballot > this.server_state.getCurrentBallot();
         this.server_state.setCurrentBallot(ballot);
+        if (request.hasCommand()) {
+          this.server_state.req_history.rememberTransferred(
+              value, DidaTradeCommand.fromMessage(request.getCommand()));
+          wakeup = true;
+        }
       }
       if (member && !entry.decided) {
         if (ballot > entry.accept_ballot) {
@@ -199,7 +218,8 @@ public class DidaTradePaxosServiceImpl
             if (max_votes + remaining < needed_quorum) {
               System.out.println(
                   "Collision detected for slot " + instance + " in ballot " + ballot);
-              if (ballot == this.server_state.getCurrentBallot()) {
+              if (ballot == this.server_state.getCurrentBallot()
+                  && this.server_state.scheduler.validBallot(ballot + 1)) {
                 this.server_state.setCurrentBallot(ballot + 1);
                 wakeup = true;
               }

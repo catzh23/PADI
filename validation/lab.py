@@ -154,7 +154,13 @@ class Lab:
 
     def log(self, name):
         path = self.path/(name+'.log')
-        return path.read_text(errors='replace') if path.exists() else ''
+        # WSL may briefly return ENODATA while a log on /mnt/c is being written.
+        for attempt in range(3):
+            try:
+                return path.read_text(errors='replace') if path.exists() else ''
+            except OSError as error:
+                if error.errno != 61 or attempt == 2: raise
+                time.sleep(.1)
 
     def wait_log(self, name, pattern, timeout=45):
         """Wait for a regular expression in a process log; raise on timeout or exit."""

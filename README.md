@@ -115,10 +115,15 @@ commands are available:
 
 - `help` - Shows the full command list;
 - `ballot ballot_number server` - Instructs a server to start ballot with number 'ballot_number';
+- `activate ballot_number server` - Allows a prepared Schedule C ballot to start proposing new requests;
 - `debug mode replica_id` - Activates debug on a given replica;
 - `exit` - Gracefully finishes the console.
 
 ## Protobuffs and Utils
+
+For Schedule C (Step 5), start all seven servers and use preparation followed by
+activation for ballots 2, 3 and 4. See [the Step 5 guide](validation/step5/README.md)
+for the protocol, manual commands and automated validation.
 
 To support these modules, the project has additional directories:
 

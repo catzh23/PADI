@@ -3,6 +3,7 @@ package didatrade.server;
 import didatrade.DidaTradeMaster;
 import didatrade.DidaTradeMasterServiceGrpc;
 import didatrade.util.DebugMode;
+import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 
 public class DidaTradeMasterServiceImpl
@@ -33,6 +34,42 @@ public class DidaTradeMasterServiceImpl
             + " completed ballot = "
             + completed_ballot);
 
+    if (!this.server_state.scheduler.validBallot(new_ballot)
+        || this.server_state.scheduler.leader(new_ballot) != this.server_state.my_id) {
+      responseObserver.onError(
+          Status.INVALID_ARGUMENT
+              .withDescription("Send a valid ballot to its scheduled leader")
+              .asRuntimeException());
+      return;
+    }
+
+    if (this.server_state.scheduler.needsActivation(new_ballot)) {
+      // Before the first transfer, ballots 0 and 1 share the initial acceptor group.
+      int reference = Math.max(completed_ballot, 0);
+      if (!this.server_state.beginPreparation(new_ballot, reference)) {
+        responseObserver.onError(
+            Status.FAILED_PRECONDITION
+                .withDescription("Stale ballot or invalid recovery reference")
+                .asRuntimeException());
+        return;
+      }
+      this.server_state.main_loop.wakeup();
+      if (!this.server_state.waitForPreparation(new_ballot)) {
+        responseObserver.onError(
+            Status.ABORTED
+                .withDescription("A higher ballot interrupted preparation")
+                .asRuntimeException());
+        return;
+      }
+      responseObserver.onNext(
+          DidaTradeMaster.NewBallotReply.newBuilder()
+              .setReqid(request_id)
+              .setCompletedballot(new_ballot)
+              .build());
+      responseObserver.onCompleted();
+      return;
+    }
+
     this.server_state.setCompletedBallot(completed_ballot);
 
     if (new_ballot > this.server_state.getCurrentBallot()) {
@@ -62,7 +99,7 @@ public class DidaTradeMasterServiceImpl
     System.out.println(request);
 
     int request_id = request.getReqid();
-    int completed_ballot = request.getCompletedballot();
+    int ballot = request.getBallot();
     ;
 
     // for debug purposes
@@ -70,14 +107,16 @@ public class DidaTradeMasterServiceImpl
         "Current ballot = "
             + this.server_state.getCurrentBallot()
             + " activated ballot = "
-            + completed_ballot);
+            + ballot);
 
-    // do stuff
+    boolean activated =
+        this.server_state.scheduler.needsActivation(ballot) && this.server_state.activate(ballot);
+    if (activated) this.server_state.main_loop.wakeup();
 
     DidaTradeMaster.ActivateReply.Builder response_builder =
         DidaTradeMaster.ActivateReply.newBuilder();
     response_builder.setReqid(request_id);
-    response_builder.setAck(true);
+    response_builder.setAck(activated);
 
     DidaTradeMaster.ActivateReply response = response_builder.build();
     responseObserver.onNext(response);

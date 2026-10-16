@@ -64,4 +64,14 @@ public class ConfigurationScheduler {
   public Integer recoveryquorum(int ballot) {
     return s.recoveryquorum(ballot);
   }
+
+  // Schedule C changes acceptors at ballot 2. Later attempts must also respect
+  // an unfinished transfer, even though their acceptor lists are identical.
+  public boolean needsActivation(int ballot) {
+    return s instanceof ScheduleC && ballot >= 2;
+  }
+
+  public boolean validBallot(int ballot) {
+    return ballot >= 0 && (!(s instanceof ScheduleC) || ballot < 5);
+  }
 }

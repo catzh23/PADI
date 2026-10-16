@@ -12,6 +12,8 @@ import java.util.Set;
 public class PhaseOneResponseProcessor extends PhaseOneProcessor {
 
   private final int quorum;
+  private final Set<Integer> expected_acceptors;
+  private final Map<Integer, DidaTradePaxos.CommandData> commands = new HashMap<>();
 
   // Set not counter. Same acceptor twice must not fill quorum twice.
   private final Set<Integer> promises;
@@ -26,8 +28,14 @@ public class PhaseOneResponseProcessor extends PhaseOneProcessor {
   private final Map<Integer, Map<Integer, Integer>> slotVotes = new HashMap<>(); // slot -> votes
 
   public PhaseOneResponseProcessor(ConfigurationScheduler s, int low_ballot, int high_ballot) {
+    this(s, high_ballot);
+  }
+
+  // For state transfer, read a quorum of the reference configuration, not the new one.
+  public PhaseOneResponseProcessor(ConfigurationScheduler s, int reference_ballot) {
     this.scheduler = s;
-    this.quorum = s.quorum(high_ballot);
+    this.quorum = s.quorum(reference_ballot);
+    this.expected_acceptors = new HashSet<>(s.acceptors(reference_ballot));
     this.promises = new HashSet<Integer>();
     this.rejected = false;
     this.value = -1;
@@ -74,7 +82,10 @@ public class PhaseOneResponseProcessor extends PhaseOneProcessor {
           chosen = entry.toBuilder().setValue(vote.getKey()).build();
         }
       }
-      result.put(slot, chosen);
+      var builder = chosen.toBuilder().clearCommand();
+      if (this.commands.containsKey(chosen.getValue()))
+        builder.setCommand(this.commands.get(chosen.getValue()));
+      result.put(slot, builder.build());
     }
     return Map.copyOf(result);
   }
@@ -89,6 +100,8 @@ public class PhaseOneResponseProcessor extends PhaseOneProcessor {
   public synchronized boolean onNext(
       ArrayList<DidaTradePaxos.PhaseOneReply> all_responses,
       DidaTradePaxos.PhaseOneReply last_response) {
+
+    if (!this.expected_acceptors.contains(last_response.getServerid())) return false;
 
     // Track highest ballot even on reject. Leader use it to catch up.
     if (last_response.getMaxballot() > this.maxballot) {
@@ -108,6 +121,7 @@ public class PhaseOneResponseProcessor extends PhaseOneProcessor {
 
     for (DidaTradePaxos.AcceptedInstance entry : last_response.getAcceptedinstancesList()) {
       if (entry.getValballot() < 0) continue;
+      if (entry.hasCommand()) this.commands.put(entry.getValue(), entry.getCommand());
 
       int slot = entry.getInstance();
 

@@ -32,6 +32,10 @@ public class DidaTradeServerState {
 
   private int current_ballot;
   private int completed_ballot;
+  private int preparation_ballot = -1;
+  private int reference_ballot = -1;
+  private int ready_ballot = -1;
+  private int activated_ballot = -1;
   /* count of log entries this replica has executed */
   private int executed_index;
 
@@ -108,7 +112,59 @@ public class DidaTradeServerState {
   }
 
   public synchronized void setCurrentBallot(int ballot) {
-    if (ballot > this.current_ballot) this.current_ballot = ballot;
+    if (this.scheduler.validBallot(ballot) && ballot > this.current_ballot) {
+      this.current_ballot = ballot;
+      notifyAll();
+    }
+  }
+
+  public synchronized boolean beginPreparation(int ballot, int reference) {
+    if (!this.scheduler.validBallot(ballot)
+        || ballot < this.current_ballot
+        || this.scheduler.leader(ballot) != this.my_id
+        || reference < 0
+        || reference >= ballot) return false;
+    if (this.preparation_ballot == ballot) return this.reference_ballot == reference;
+    this.preparation_ballot = ballot;
+    this.reference_ballot = reference;
+    setCurrentBallot(ballot);
+    return true;
+  }
+
+  public synchronized int getReferenceBallot(int ballot) {
+    return this.preparation_ballot == ballot ? this.reference_ballot : -1;
+  }
+
+  public synchronized void finishPreparation(int ballot) {
+    if (ballot != this.current_ballot || ballot != this.preparation_ballot) return;
+    if (this.ready_ballot == ballot) return;
+    this.ready_ballot = ballot;
+    this.completed_ballot = ballot;
+    System.out.println("Preparation complete for ballot " + ballot + "; waiting for activate");
+    notifyAll();
+  }
+
+  public synchronized boolean waitForPreparation(int ballot) {
+    while (this.current_ballot == ballot && this.ready_ballot != ballot) {
+      try {
+        wait();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+    }
+    return this.current_ballot == ballot && this.ready_ballot == ballot;
+  }
+
+  public synchronized boolean activate(int ballot) {
+    if (ballot != this.current_ballot || ballot != this.ready_ballot) return false;
+    this.activated_ballot = ballot;
+    System.out.println("Activated ballot " + ballot);
+    return true;
+  }
+
+  public synchronized boolean canProposeNewRequests(int ballot) {
+    return !this.scheduler.needsActivation(ballot) || this.activated_ballot == ballot;
   }
 
   public synchronized int getCompletedBallot() {
@@ -129,8 +185,9 @@ public class DidaTradeServerState {
   }
 
   public synchronized void updateCompletedBallot(int ballot) {
-    // WARNING: THIS ONLY WORKS FOR CONFIGURATIONS WHERE THERE IS NO NEED FOR STATE-TRANSFER!!!!!
-    // NEEDS TO BE UPDATE FOR THE PROJECT
+    // In Schedule C a decided slot does not certify a completed state transfer.
+    if (this.scheduler.needsActivation(this.current_ballot)) return;
+    // Fixed membership keeps the baseline completion rule. Transfers use finishPreparation.
 
     ballot = this.findMaxDecidedBallot();
     if (ballot > this.completed_ballot) this.completed_ballot = ballot;
@@ -183,6 +240,9 @@ public class DidaTradeServerState {
           learn_request_builder.setBallot(ballot);
           learn_request_builder.setServerid(this.my_id);
           learn_request_builder.setFast(fast);
+          RequestRecord record = this.req_history.getIfExists(value);
+          if (record != null && this.scheduler.needsActivation(ballot))
+            learn_request_builder.setCommand(record.getRequest().toMessage());
 
           DidaTradePaxos.LearnRequest learn_request = learn_request_builder.build();
 

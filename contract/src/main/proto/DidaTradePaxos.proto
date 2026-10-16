@@ -16,6 +16,15 @@ message AcceptedInstance {
   int32 value = 2;
   int32 valballot = 3;
   bool fast = 4; // so the new leader knows which recovery rule applies
+  CommandData command = 5;
+}
+
+// A transferred request must be executable even if its client message was missed.
+message CommandData {
+  string action = 1;
+  int32 userid = 2;
+  int32 quantity = 3;
+  int32 stock = 4;
 }
 
 message PhaseOneReply {
@@ -34,6 +43,7 @@ message PhaseTwoRequest {
   int32 instance        = 1;
   int32 requestballot   = 2;
   int32 value           = 3;
+  CommandData command   = 4;
 }
 
 message PhaseTwoReply {
@@ -50,6 +60,7 @@ message LearnRequest {
   int32 value      = 3;
   int32 serverid   = 4;
   bool fast        = 5; // learners need to know whether to wait for fast quorum or not
+  CommandData command = 6;
 }
 
 message LearnReply {

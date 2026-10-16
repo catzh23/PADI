@@ -61,4 +61,18 @@ public class RequestHistory {
   public synchronized java.util.List<Integer> getPendingIds() {
     return new java.util.ArrayList<>(this.pending.keySet());
   }
+
+  public synchronized void rememberTransferred(int id, DidaTradeCommand command) {
+    getOrAdd(id, command);
+  }
+
+  // A client request may arrive after state transfer already supplied or executed it.
+  public synchronized RequestRecord getOrAdd(int id, DidaTradeCommand command) {
+    RequestRecord record = getIfExists(id);
+    if (record == null) {
+      record = new RequestRecord(id, command);
+      addToPending(id, record);
+    }
+    return record;
+  }
 }

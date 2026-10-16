@@ -1,5 +1,7 @@
 package didatrade.server;
 
+import didatrade.DidaTradePaxos;
+
 enum DidaTradeAction {
   POPULATE,
   ADDUSER,
@@ -63,5 +65,20 @@ public class DidaTradeCommand {
 
   public int getStock() {
     return this.stock;
+  }
+
+  public DidaTradePaxos.CommandData toMessage() {
+    return DidaTradePaxos.CommandData.newBuilder()
+        .setAction(this.action.name())
+        .setUserid(this.user_id)
+        .setQuantity(this.quantity)
+        .setStock(this.stock)
+        .build();
+  }
+
+  public static DidaTradeCommand fromMessage(DidaTradePaxos.CommandData command) {
+    return new DidaTradeCommand(
+        DidaTradeAction.valueOf(command.getAction()), command.getUserid(),
+        command.getQuantity(), command.getStock());
   }
 }

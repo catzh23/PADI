@@ -18,6 +18,7 @@ message NewBallotReply {
 message ActivateRequest {
   int32 reqid           = 1;
   int32 completedballot = 2;
+  int32 ballot = 3; // exact ballot the console authorizes
 }
 
 message ActivateReply {

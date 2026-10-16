@@ -32,8 +32,7 @@ public class DidaTradeMainServiceImpl
     // for debug purposes
     System.out.println("Adding populate request with reqid " + reqid + " to pending");
 
-    RequestRecord request_record = new RequestRecord(reqid, command);
-    this.server_state.req_history.addToPending(reqid, request_record);
+    RequestRecord request_record = this.server_state.req_history.getOrAdd(reqid, command);
     this.server_state.main_loop.wakeup();
     boolean result = request_record.waitForResponse();
 
@@ -70,8 +69,7 @@ public class DidaTradeMainServiceImpl
     // for debug purposes
     System.out.println("Adding add request with reqid " + reqid + " to pending");
 
-    RequestRecord request_record = new RequestRecord(reqid, command);
-    this.server_state.req_history.addToPending(reqid, request_record);
+    RequestRecord request_record = this.server_state.req_history.getOrAdd(reqid, command);
     this.server_state.main_loop.wakeup();
     boolean result = request_record.waitForResponse();
 
@@ -106,8 +104,7 @@ public class DidaTradeMainServiceImpl
     // for debug purposes
     System.out.println("Adding buy request with reqid " + reqid + " to pending");
 
-    RequestRecord request_record = new RequestRecord(reqid, command);
-    this.server_state.req_history.addToPending(reqid, request_record);
+    RequestRecord request_record = this.server_state.req_history.getOrAdd(reqid, command);
     this.server_state.main_loop.wakeup();
     boolean result = request_record.waitForResponse();
 
@@ -143,8 +140,7 @@ public class DidaTradeMainServiceImpl
     // for debug purposes
     System.out.println("Adding sell request with reqid " + reqid + " to pending");
 
-    RequestRecord request_record = new RequestRecord(reqid, command);
-    this.server_state.req_history.addToPending(reqid, request_record);
+    RequestRecord request_record = this.server_state.req_history.getOrAdd(reqid, command);
     this.server_state.main_loop.wakeup();
     boolean result = request_record.waitForResponse();
 
@@ -216,8 +212,7 @@ public class DidaTradeMainServiceImpl
     // for debug purposes
     System.out.println("Adding dump request with reqid " + reqid + " to pending");
 
-    RequestRecord request_record = new RequestRecord(reqid, command);
-    this.server_state.req_history.addToPending(reqid, request_record);
+    RequestRecord request_record = this.server_state.req_history.getOrAdd(reqid, command);
     this.server_state.main_loop.wakeup();
     boolean result = request_record.waitForResponse();
 

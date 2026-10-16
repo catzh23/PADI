@@ -4,6 +4,7 @@ import didatrade.DidaTradePaxos;
 import didatrade.util.CollectorStreamObserver;
 import didatrade.util.GenericResponseCollector;
 import didatrade.util.PhaseOneProcessor;
+import didatrade.util.PhaseOneResponseProcessor;
 import didatrade.util.PhaseTwoResponseProcessor;
 import java.util.*;
 
@@ -26,6 +27,8 @@ public class MainLoop implements Runnable {
   private GenericResponseCollector<DidaTradePaxos.AnyReply> any_collector;
   // Keep a proposal's value even if its RPCs fail: never change it within a ballot.
   private final TreeMap<Integer, Integer> prepared_values = new TreeMap<>();
+  // These slots must reach the new acceptors, even if this leader already executed them.
+  private final TreeMap<Integer, Integer> transfer_remaining = new TreeMap<>();
   private final Map<Integer, Proposal> in_flight = new HashMap<>();
   private final Map<Integer, Long> retry_after = new HashMap<>();
   // request -> slot where this acceptor voted for it in the current ballot
@@ -63,6 +66,7 @@ public class MainLoop implements Runnable {
         this.prepare_processor = null;
         this.prepare_retry_after = 0;
         this.prepared_values.clear();
+        this.transfer_remaining.clear();
         this.in_flight.clear();
         this.retry_after.clear();
         this.fast_placed.clear();
@@ -78,9 +82,13 @@ public class MainLoop implements Runnable {
 
       if (ballot >= 0 && this.server_state.scheduler.leader(ballot) == this.server_state.my_id) {
         if (this.prepared_ballot == ballot) {
-          if (!any_sent && this.fast_active && System.nanoTime() >= this.any_retry_after)
-            startAny(ballot);
-          proposeAvailable(ballot);
+          if (!this.server_state.canProposeNewRequests(ballot)) {
+            transferHistory(ballot);
+          } else {
+            if (!any_sent && this.fast_active && System.nanoTime() >= this.any_retry_after)
+              startAny(ballot);
+            proposeAvailable(ballot);
+          }
         } else if (this.prepare_collector == null
             && System.nanoTime() >= this.prepare_retry_after
             && (ballot > 0
@@ -123,20 +131,28 @@ public class MainLoop implements Runnable {
   }
 
   private void startPrepare(int ballot) {
-    List<Integer> acceptors = this.server_state.scheduler.acceptors(ballot);
+    boolean transfer = this.server_state.scheduler.needsActivation(ballot);
+    int reference = transfer ? this.server_state.getReferenceBallot(ballot) : ballot;
+    // A learner can hear about the new ballot before the console supplies its reference.
+    if (reference < 0) return;
+    List<Integer> acceptors = this.server_state.scheduler.acceptors(reference);
     this.prepare_processor =
-        PhaseOneProcessor.create(
-            this.server_state.scheduler,
-            Math.max(this.server_state.getCompletedBallot(), 0),
-            ballot);
+        transfer
+            ? new PhaseOneResponseProcessor(this.server_state.scheduler, reference)
+            : PhaseOneProcessor.create(
+                this.server_state.scheduler,
+                Math.max(this.server_state.getCompletedBallot(), 0),
+                ballot);
     this.prepare_collector =
         new GenericResponseCollector<>(new ArrayList<>(), acceptors.size(), this.prepare_processor);
     var request =
         DidaTradePaxos.PhaseOneRequest.newBuilder()
-            .setInstance(this.next_log_entry)
+            .setInstance(transfer ? 0 : this.next_log_entry)
             .setRequestballot(ballot)
             .build();
     System.out.println("Going to run paxos phase 1 for ballot " + ballot);
+    if (transfer)
+      System.out.println("Recovering ballot " + ballot + " from configuration " + reference);
     for (int acceptor : acceptors)
       this.server_state.async_stubs[acceptor].phaseone(request, observer(this.prepare_collector));
   }
@@ -147,20 +163,45 @@ public class MainLoop implements Runnable {
     synchronized (this.server_state) {
       if (!accepted) this.server_state.setCurrentBallot(this.prepare_processor.getMaxballot());
       if (accepted && ballot == this.server_state.getCurrentBallot()) {
+        boolean transfer = this.server_state.scheduler.needsActivation(ballot);
+        var recovered = this.prepare_processor.getAcceptedInstances();
+        // A request ID alone cannot restore the application on a replica that missed it.
+        for (var entry : recovered.values()) {
+          if (entry.hasCommand())
+            this.server_state.req_history.rememberTransferred(
+                entry.getValue(), DidaTradeCommand.fromMessage(entry.getCommand()));
+          if (transfer
+              && entry.getValue() != PaxosInstance.NO_OP
+              && this.server_state.req_history.getIfExists(entry.getValue()) == null) {
+            this.prepare_collector = null;
+            this.prepare_processor = null;
+            this.prepare_retry_after = System.nanoTime() + RETRY_NANOS;
+            return;
+          }
+        }
         this.prepared_values.clear();
-        for (var entry : this.prepare_processor.getAcceptedInstances().values()) {
-          if (entry.getInstance() >= this.next_log_entry)
+        this.transfer_remaining.clear();
+        int last_slot = -1;
+        for (var entry : recovered.values()) {
+          last_slot = Math.max(last_slot, entry.getInstance());
+          if (transfer) this.transfer_remaining.put(entry.getInstance(), entry.getValue());
+          else if (entry.getInstance() >= this.next_log_entry)
             this.prepared_values.put(entry.getInstance(), entry.getValue());
+        }
+        if (transfer) {
+          // Empty holes in the recovered prefix cannot be filled with client requests
+          // before activation. No-ops allow lagging learners to execute that prefix.
+          for (int slot = 0; slot <= last_slot; slot++)
+            this.transfer_remaining.putIfAbsent(slot, PaxosInstance.NO_OP);
         }
         this.prepared_ballot = ballot;
         fast_active = this.server_state.scheduler.fastpaxos(ballot);
-        any_from =
-            this.prepared_values.isEmpty() ? next_log_entry : this.prepared_values.lastKey() + 1;
+        any_from = Math.max(this.next_log_entry, last_slot + 1);
         System.out.println(
             "Multi-prepare completed for ballot "
                 + ballot
                 + "; recovered slots = "
-                + this.prepared_values.keySet());
+                + (transfer ? this.transfer_remaining.keySet() : this.prepared_values.keySet()));
       }
     }
     this.prepare_collector = null;
@@ -180,6 +221,8 @@ public class MainLoop implements Runnable {
         synchronized (this.server_state) {
           // A ballot change abandons its rounds. Their late callbacks cannot decide new slots.
           if (ballot != this.server_state.getCurrentBallot()) continue;
+          if (this.transfer_remaining.remove(slot) != null)
+            System.out.println("Transferred slot " + slot + " in ballot " + ballot);
           PaxosInstance entry = this.server_state.paxos_log.testAndSetEntry(slot);
           if (!entry.decided) {
             entry.command_id = proposal.value();
@@ -193,6 +236,20 @@ public class MainLoop implements Runnable {
         this.server_state.setCurrentBallot(proposal.processor().getMaxballot());
         this.retry_after.put(slot, System.nanoTime() + RETRY_NANOS);
       }
+    }
+  }
+
+  private void transferHistory(int ballot) {
+    if (this.transfer_remaining.isEmpty()) {
+      this.server_state.finishPreparation(ballot);
+      return;
+    }
+    for (var item : this.transfer_remaining.entrySet()) {
+      if (this.in_flight.size() >= PIPELINE_WINDOW) break;
+      int slot = item.getKey();
+      if (this.in_flight.containsKey(slot)) continue;
+      if (System.nanoTime() < this.retry_after.getOrDefault(slot, 0L)) continue;
+      startProposal(slot, item.getValue(), ballot);
     }
   }
 
@@ -230,12 +287,15 @@ public class MainLoop implements Runnable {
         new GenericResponseCollector<DidaTradePaxos.PhaseTwoReply>(
             new ArrayList<>(), acceptors.size(), processor);
     this.in_flight.put(slot, new Proposal(value, processor, collector));
-    var request =
+    var request_builder =
         DidaTradePaxos.PhaseTwoRequest.newBuilder()
             .setInstance(slot)
             .setValue(value)
-            .setRequestballot(ballot)
-            .build();
+            .setRequestballot(ballot);
+    RequestRecord record = this.server_state.req_history.getIfExists(value);
+    if (record != null && this.server_state.scheduler.needsActivation(ballot))
+      request_builder.setCommand(record.getRequest().toMessage());
+    var request = request_builder.build();
     System.out.println(
         "Sending phase 2 for slot " + slot + " in ballot " + ballot + ", value " + value);
     for (int acceptor : acceptors)
@@ -366,7 +426,9 @@ public class MainLoop implements Runnable {
                 + " has been decided with command id = "
                 + entry.command_id);
         this.prepared_values.remove(this.next_log_entry);
-        this.in_flight.remove(this.next_log_entry);
+        // Learning/executing locally does not confirm transfer to the new quorum.
+        if (!this.transfer_remaining.containsKey(this.next_log_entry))
+          this.in_flight.remove(this.next_log_entry);
         this.retry_after.remove(this.next_log_entry);
         this.next_log_entry++;
         this.server_state.setExecutedIndex(this.next_log_entry);
