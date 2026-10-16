@@ -28,8 +28,8 @@ public class MainLoop implements Runnable {
   private final TreeMap<Integer, Integer> prepared_values = new TreeMap<>();
   private final Map<Integer, Proposal> in_flight = new HashMap<>();
   private final Map<Integer, Long> retry_after = new HashMap<>();
-  // Keep track of the requestIDs this acceptor has placed in the current ballot
-  private final Set<Integer> fast_placed = new HashSet<>();
+  // request -> slot where this acceptor voted for it in the current ballot
+  private final Map<Integer, Integer> fast_placed = new HashMap<>();
 
   private record Proposal(
       int value,
@@ -293,10 +293,31 @@ public class MainLoop implements Runnable {
         return;
       }
 
+      // start fast-accepting only after executing the recovered prefix
+      if (this.next_log_entry < this.server_state.getAnyFrom()) return;
+
+      // release requests whose slot was won by another request
+      var iterator = this.fast_placed.entrySet().iterator();
+      while (iterator.hasNext()) {
+        var placement = iterator.next();
+        int request = placement.getKey();
+        int slot = placement.getValue();
+
+        PaxosInstance entry = this.server_state.paxos_log.getEntry(slot);
+        if (entry != null && entry.decided && entry.command_id != request) iterator.remove();
+      }
+
+      // requests already decided in the window must not be voted for again
+      Set<Integer> decided = new HashSet<>();
+      for (int s = this.next_log_entry; s < this.next_log_entry + PIPELINE_WINDOW; s++) {
+        PaxosInstance e = this.server_state.paxos_log.getEntry(s);
+        if (e != null && e.decided) decided.add(e.command_id);
+      }
+
       int slot = Math.max(this.server_state.getAnyFrom(), this.next_log_entry);
       for (int reqid : this.server_state.req_history.getPendingIds()) {
-        if (this.fast_placed.contains(reqid)) continue;
-        if (this.server_state.req_history.getIfProcessed(reqid) != null) continue;
+        if (this.fast_placed.containsKey(reqid)) continue;
+        if (decided.contains(reqid)) continue;
 
         PaxosInstance entry = this.server_state.paxos_log.getEntry(slot);
         // finds available slot to place the request
@@ -312,7 +333,7 @@ public class MainLoop implements Runnable {
         entry.accepted_value = reqid;
         entry.write_ballot = ballot;
         entry.accepted_fast = true;
-        this.fast_placed.add(reqid);
+        this.fast_placed.put(reqid, slot);
         placed.put(reqid, slot);
         System.out.println(
             "Fast accepted request " + reqid + " in slot " + slot + " in ballot " + ballot);
