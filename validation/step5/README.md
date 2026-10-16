@@ -8,12 +8,12 @@ python3 validation/step5/run.py
 ```
 
 The tests use seven replicas with Schedule C. The default base port is 19570;
-use `--port` to change it. Controlled checks also use base+20 through base+46.
+use `--port` to change it. Controlled checks also use base+20 through base+56.
 Logs and `results.json` are saved under `validation/step5/runs/`.
 
 ## Protocol used
 
-Ballots 0 and 1 retain the existing fixed-membership behavior. Ballots 2, 3 and 4
+Ballots 0 and 1 retain the existing fixed-membership behavior. Manual changes to ballots 2, 3 and 4
 use preparation followed by explicit activation. This also covers a later ballot
 whose acceptor list is unchanged but whose predecessor never finished transferring.
 
@@ -40,9 +40,14 @@ whose acceptor list is unchanged but whose predecessor never finished transferri
 
 The same console must remain running during the experiment: it is the master
 and retains the last completed reference. This implementation does not add
-persistent storage or recovery of a restarted master. A collision can advance
-the current ballot; for ballots 2 onward the console supplies the recovery
-reference with `ballot`, and authorizes new requests with `activate`.
+persistent storage or recovery of a restarted master.
+
+A collision in Fast ballot 2 starts ballot 3 automatically. Fast votes in ballot 2
+are only sent after activation, so configuration 2 is a valid recovery reference.
+The acceptor group does not change: S4 prepares S2-S6, preserves the recovered
+values with phase 2 quorums, and then resumes new requests without console commands.
+This does not bypass the initial transfer or activate an unfinished manual preparation.
+If the scheduled leader is unavailable, a manual ballot change is still needed.
 Schedule C ends at ballot 4; ballot 5 is rejected.
 
 ## Manual reproduction
@@ -100,6 +105,9 @@ started with `ballot 4 5`, followed by `activate 4 5` after preparation complete
 - Neither an old-only quorum nor a new-only quorum completes this recovery;
   duplicates do not count twice, and shared acceptors can satisfy both groups.
 - Stale activation, old-ballot writes and writes to removed acceptors are rejected.
+- A collision in activated ballot 2 recovers automatically without S0/S1 or console
+  commands, preserves an already chosen slot, and waits for phase 2 quorums before
+  serving new requests.
 
 The tests exercise the real services and leader loop. Controlled checks construct
 specific accepted histories before starting RPC servers; live scenarios use the

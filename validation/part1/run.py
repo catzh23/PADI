@@ -73,6 +73,10 @@ def debug():
         lab.send('app1','buy 3 50')
         done=wait_for(lambda: all(lab.executed(i,701) for i in range(3)))
         record('slow mode off: next request completes',done,f'{time.monotonic()-start:.2f}s')
+        # Schedule A's Fast ballot 0 needs all three acceptors. Use a classic
+        # ballot to check that two surviving replicas can still make progress.
+        lab.send('console', 'ballot 1 1')
+        lab.wait_log('s1', 'Multi-prepare completed for ballot 1')
         lab.debug('crash',2)
         record('crash: process exits',wait_for(lambda: lab.procs['s2'].poll() is not None))
         lab.send('app1','sell 3 50')

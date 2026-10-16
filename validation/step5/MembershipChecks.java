@@ -165,5 +165,59 @@ public class MembershipChecks {
     historyAndBodies(port);
     emptyHistory(port + 10);
     InterruptedTransferChecks.run(port + 20);
+    automaticRecovery(port + 30);
+  }
+
+  static void automaticRecovery(int port) throws Exception {
+    try (var c = new Cluster(port)) {
+      var allowWrites = new java.util.concurrent.atomic.AtomicBoolean(false);
+      var attempts = new java.util.concurrent.atomic.AtomicInteger();
+      // A legal history after activation of ballot 2: slot 0 has a 2/2 split;
+      // slot 1 has four Fast acceptances and must be preserved.
+      // Removed replicas S0/S1 are deliberately unavailable.
+      for (int i = 2; i < 7; i++) {
+        for (int id : new int[] {101, 201, 301, 401}) pending(c.states[i], id, sell(id / 100 - 1));
+        if (i < 6) {
+          var split = c.states[i].paxos_log.testAndSetEntry(0);
+          split.write_ballot = 2;
+          split.accepted_fast = true;
+          split.accepted_value = i < 4 ? 101 : 201;
+          var chosen = c.states[i].paxos_log.testAndSetEntry(1);
+          chosen.write_ballot = 2;
+          chosen.accepted_fast = true;
+          chosen.accepted_value = 301;
+        }
+        c.servers[i] = ServerBuilder.forPort(port + i)
+            .addService(new DidaTradePaxosServiceImpl(c.states[i]) {
+              @Override public void phasetwo(DidaTradePaxos.PhaseTwoRequest request,
+                  io.grpc.stub.StreamObserver<DidaTradePaxos.PhaseTwoReply> observer) {
+                attempts.incrementAndGet();
+                if (!allowWrites.get()) observer.onError(io.grpc.Status.UNAVAILABLE.asRuntimeException());
+                else super.phasetwo(request, observer);
+              }
+            }).build().start();
+      }
+      var learner = DidaTradePaxosServiceGrpc.newBlockingStub(c.states[4].channels[4])
+          .withDeadlineAfter(3, TimeUnit.SECONDS);
+      for (int id = 2; id < 6; id++) learner.learn(DidaTradePaxos.LearnRequest.newBuilder()
+          .setBallot(2).setServerid(id).setFast(true).setValue(id < 4 ? 101 : 201).build());
+      for (int i = 2; i < 7; i++) {
+        c.states[i].main_loop_worker = new Thread(c.states[i].main_loop);
+        c.states[i].main_loop_worker.start();
+      }
+      await("collision starts recovery without a console ballot", () -> attempts.get() > 0);
+      check("automatic recovery uses the activated configuration", c.states[4].getReferenceBallot(3) == 2);
+      check("automatic recovery still needs a phase 2 quorum", !c.states[4].canProposeNewRequests(3));
+      check("new request waits during automatic recovery", c.states[4].req_history.getIfProcessed(401) == null);
+      allowWrites.set(true);
+      await("automatic recovery resumes without console activation", () -> c.states[4].canProposeNewRequests(3));
+      for (int i = 2; i < 7; i++) {
+        final int replica = i;
+        await("S" + i + " executes new requests after automatic recovery",
+            () -> c.states[replica].req_history.getIfProcessed(401) != null);
+        check("S" + i + " preserves the previously chosen slot",
+            c.states[i].paxos_log.getEntry(1).command_id == 301);
+      }
+    }
   }
 }

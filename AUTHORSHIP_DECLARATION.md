@@ -6,20 +6,19 @@ We,
 - Cátia Zharko, n.º 109972, MEIC
 - Joana Cardoso, n.º 109864, MEIC
 
-We hereby declare, on our honor, that the work entitled **"dida-trade — Parts 1 and 2"**,
+We hereby declare, on our honor, that the work entitled **"dida-trade — Parts 1 to 5"**,
 carried out as part of the **Design and Implementation of Distributed Applications**
 course, resulted from the active participation of the following group members.
 The individual contributions were:
 
-- **Filip Dubják:** Implementation of Part 1, including work on the baseline correction, debug modes and the demonstration of the incorrect phase 1.
-- **Cátia Zharko:** Implementation of the optimization Multi-Prepare across slots that reuses a successful phase 1 while the ballot remains unchanged
-- **Joana Cardoso:** Review and integration of Parts 1 and 2; Implementation of overlapping phase 2 proposals with ordered execution (concurrency);
+- **Filip Dubják:** Initial implementation of Part 1, including the baseline correction, debug modes and the demonstration of the incorrect phase 1; Implementation of Part 4- causal balance reads.
+- **Cátia Zharko:** Initial optimization to reuse phase 1 within a ballot in Part 2; implementation and corrections of Fast Paxos in Part 3.
+- **Joana Cardoso:** Phase 2 quorum validation; Multi-prepare recovery and overlapping phase 2 proposals with ordered execution; corrections and validation of causal balance reads; implementation and validation of Part 5.
   
 
-We declare that this work is original and complies with the applicable academic
-regulations.
+We declare that this work is original and complies with the applicable academic regulations.
 
-Lisbon, 30/09/2026
+Lisbon, 16/10/2026
 
 - Cátia Zharko
 - Filip Dubják

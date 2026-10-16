@@ -36,6 +36,7 @@ public class DidaTradeServerState {
   private int reference_ballot = -1;
   private int ready_ballot = -1;
   private int activated_ballot = -1;
+  private int automatic_ballot = -1;
   /* count of log entries this replica has executed */
   private int executed_index;
 
@@ -135,12 +136,31 @@ public class DidaTradeServerState {
     return this.preparation_ballot == ballot ? this.reference_ballot : -1;
   }
 
+  public synchronized void advanceAfterCollision(int ballot) {
+    int next = ballot + 1;
+    if (ballot != this.current_ballot || !this.scheduler.validBallot(next)) return;
+    setCurrentBallot(next);
+    // Fast votes in ballot 2 mean its transfer was completed and activated.
+    // Its successor uses the same acceptors, so no new membership needs approval.
+    if (this.scheduler.needsActivation(next)
+        && this.scheduler.fastpaxos(ballot)
+        && this.scheduler.acceptors(ballot).equals(this.scheduler.acceptors(next))
+        && beginPreparation(next, ballot)) {
+      this.automatic_ballot = next;
+    }
+  }
+
   public synchronized void finishPreparation(int ballot) {
     if (ballot != this.current_ballot || ballot != this.preparation_ballot) return;
     if (this.ready_ballot == ballot) return;
     this.ready_ballot = ballot;
     this.completed_ballot = ballot;
-    System.out.println("Preparation complete for ballot " + ballot + "; waiting for activate");
+    if (this.automatic_ballot == ballot) {
+      activate(ballot);
+      System.out.println("Automatic recovery complete for ballot " + ballot);
+    } else {
+      System.out.println("Preparation complete for ballot " + ballot + "; waiting for activate");
+    }
     notifyAll();
   }
 

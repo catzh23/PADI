@@ -220,7 +220,7 @@ public class DidaTradePaxosServiceImpl
                   "Collision detected for slot " + instance + " in ballot " + ballot);
               if (ballot == this.server_state.getCurrentBallot()
                   && this.server_state.scheduler.validBallot(ballot + 1)) {
-                this.server_state.setCurrentBallot(ballot + 1);
+                this.server_state.advanceAfterCollision(ballot);
                 wakeup = true;
               }
             }

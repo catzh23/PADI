@@ -28,6 +28,10 @@ python3 validation/part1/run.py debug
 ```
 
 These checks are not automatically executed by `mvn clean install`.
+
+The debug scenario switches to classic ballot 1 before crashing a replica.
+Schedule A's Fast ballot 0 needs all three acceptors; classic ballot 1 needs two,
+which is the quorum required for the surviving-majority check.
 Rebuild after changing production Java or `.proto` files. Avoid concurrent IDE
 builds or Maven builds writing to the same `target` directories during compilation
 and test startup.
