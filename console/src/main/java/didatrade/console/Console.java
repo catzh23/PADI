@@ -98,6 +98,7 @@ public class Console {
         case "help":
           System.out.println("\thelp");
           System.out.println("\tballot number replica");
+          System.out.println("\tactivate number replica (after preparation completes)");
           System.out.println("\tdebug <" + DebugMode.USAGE + "|1-5> replica");
           System.out.println("\texit");
           break;
@@ -132,7 +133,7 @@ public class Console {
                         newballot_collector);
                 newballot_request.setReqid(reqid);
                 newballot_request.setNewballot(ballot_number);
-                newballot_request.setCompletedballot(this.ballot_completed);
+                newballot_request.setCompletedballot(this.getBallotCompleted());
                 console_async_stubs[replica].newballot(
                     newballot_request.build(), newballot_observer);
 
@@ -167,7 +168,7 @@ public class Console {
           break;
         case "activate":
           System.out.println("activate " + parameter1);
-          if (parameter1 != null) {
+          if (parameter1 != null && parameter2 != null) {
             int ballot_number = Integer.parseInt(parameter1);
             if (ballot_number < this.getLastBallot())
               System.out.println(
@@ -194,7 +195,8 @@ public class Console {
                 CollectorStreamObserver<DidaTradeMaster.ActivateReply> activate_observer =
                     new CollectorStreamObserver<DidaTradeMaster.ActivateReply>(activate_collector);
                 activate_request.setReqid(reqid);
-                activate_request.setCompletedballot(this.ballot_completed);
+                activate_request.setCompletedballot(this.getBallotCompleted());
+                activate_request.setBallot(ballot_number);
                 console_async_stubs[replica].activate(activate_request.build(), activate_observer);
 
                 // collect the result in background
@@ -222,7 +224,7 @@ public class Console {
               } catch (NumberFormatException e) {
               }
             }
-          } else System.out.println("usage: activate replica");
+          } else System.out.println("usage: activate number replica");
           break;
         case "debug":
           System.out.println("debug " + parameter1 + " " + parameter2);

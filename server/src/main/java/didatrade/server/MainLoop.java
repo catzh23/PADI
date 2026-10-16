@@ -136,13 +136,17 @@ public class MainLoop implements Runnable {
     // A learner can hear about the new ballot before the console supplies its reference.
     if (reference < 0) return;
     List<Integer> acceptors = this.server_state.scheduler.acceptors(reference);
-    this.prepare_processor =
-        transfer
-            ? new PhaseOneResponseProcessor(this.server_state.scheduler, reference)
-            : PhaseOneProcessor.create(
-                this.server_state.scheduler,
-                Math.max(this.server_state.getCompletedBallot(), 0),
-                ballot);
+    if (transfer) {
+      var processor = new PhaseOneResponseProcessor(this.server_state.scheduler, reference, ballot);
+      this.prepare_processor = processor;
+      acceptors = processor.getAcceptors();
+    } else {
+      this.prepare_processor =
+          PhaseOneProcessor.create(
+              this.server_state.scheduler,
+              Math.max(this.server_state.getCompletedBallot(), 0),
+              ballot);
+    }
     this.prepare_collector =
         new GenericResponseCollector<>(new ArrayList<>(), acceptors.size(), this.prepare_processor);
     var request =

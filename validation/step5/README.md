@@ -8,7 +8,7 @@ python3 validation/step5/run.py
 ```
 
 The tests use seven replicas with Schedule C. The default base port is 19570;
-use `--port` to change it. Controlled checks also use base+20 through base+36.
+use `--port` to change it. Controlled checks also use base+20 through base+46.
 Logs and `results.json` are saved under `validation/step5/runs/`.
 
 ## Protocol used
@@ -21,8 +21,13 @@ whose acceptor list is unchanged but whose predecessor never finished transferri
    Before the first transfer, configuration 0 is the default reference: ballots
    0 and 1 have the same acceptors. Their replies still report the actual accepted
    ballot of every slot, so Fast and classic recovery use the recorded history.
-2. The leader prepares a quorum of that reference configuration. For a transfer,
-   it asks for the entire accepted log, including slots it has already executed.
+2. The leader prepares a quorum of that reference configuration. If ballot 3 or
+   4 still refers to configuration 0 or 1, it also needs a quorum of S2-S6:
+   an unfinished intermediate transfer may already have decided some slots there.
+   It needs three distinct promises in each group, not three from their union.
+   A shared acceptor counts once in each group. The highest accepted ballot is
+   considered per slot across all collected replies. For a transfer, the leader
+   asks for the entire accepted log, including slots it has already executed.
 3. It preserves the recovered values in the new acceptor group using classic
    phase 2, even when the new ballot will later use Fast Paxos. Empty holes in
    the recovered prefix are filled with no-ops. Request bodies travel with the
@@ -89,7 +94,11 @@ started with `ballot 4 5`, followed by `activate 4 5` after preparation complete
 - Empty histories and holes in the recovered prefix are handled.
 - New requests and `any` are held until activation.
 - Recovery continues after removing S0/S1, using the completed new configuration.
-- A preparation interrupted in ballot 2 is recovered by ballot 3 from the old group.
+- A preparation interrupted in ballot 2 is recovered by ballot 3 from both groups.
+- A value already decided during an unfinished transfer is preserved even if
+  the old group's replies alone would select a different value.
+- Neither an old-only quorum nor a new-only quorum completes this recovery;
+  duplicates do not count twice, and shared acceptors can satisfy both groups.
 - Stale activation, old-ballot writes and writes to removed acceptors are rejected.
 
 The tests exercise the real services and leader loop. Controlled checks construct

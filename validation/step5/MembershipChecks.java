@@ -164,5 +164,6 @@ public class MembershipChecks {
     int port = Integer.parseInt(args[0]);
     historyAndBodies(port);
     emptyHistory(port + 10);
+    InterruptedTransferChecks.run(port + 20);
   }
 }

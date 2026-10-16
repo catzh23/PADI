@@ -111,7 +111,7 @@ def interrupted_preparation():
         l.wait_log('s4', 'Recovering ballot 3 from configuration 1')
         for i in (3, 5, 6): l.debug('un-freeze', i)
         l.prepared(3)
-        lab.record('ballot 3 skips unfinished ballot 2 and recovers the old group', True)
+        lab.record('ballot 3 recovers after unfinished ballot 2 with the old reference', True)
         l.send('app1', 'sell 2 50')
         time.sleep(1)
         lab.record('same acceptor list does not bypass activation after interruption',
@@ -124,7 +124,8 @@ def interrupted_preparation():
 
 def controlled_checks():
     source = Path(__file__).parent/'MembershipChecks.java'
-    subprocess.run(['javac', '-proc:none', '-cp', lab.CP, '-d', str(OUT), str(source)], check=True)
+    subprocess.run(['javac', '-proc:none', '-cp', lab.CP, '-d', str(OUT), str(source),
+                    str(source.with_name('InterruptedTransferChecks.java'))], check=True)
     result = subprocess.run(['java', '-cp', str(OUT)+':'+lab.CP,
                              'didatrade.server.MembershipChecks', str(lab.PORT + 20)],
                             capture_output=True, text=True, timeout=60)
