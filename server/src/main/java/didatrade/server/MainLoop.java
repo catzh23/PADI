@@ -7,11 +7,15 @@ import didatrade.util.PhaseOneProcessor;
 import didatrade.util.PhaseOneResponseProcessor;
 import didatrade.util.PhaseTwoResponseProcessor;
 import java.util.*;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public class MainLoop implements Runnable {
   // Limit how far consensus may run ahead of ordered execution.
   static final int PIPELINE_WINDOW = 16;
-  private static final long RETRY_NANOS = 250_000_000L;
+  private static final long RETRY_AFTER_FAIL_TIME = 250; // milliseconds
+  private ScheduledExecutorService retry_timer;
   private final DidaTradeServerState server_state;
   private boolean has_work;
   private int next_log_entry;
@@ -51,61 +55,78 @@ public class MainLoop implements Runnable {
   // RPC callbacks collect responses and wake this loop; only this thread executes commands.
   @Override
   public synchronized void run() {
-    while (!Thread.currentThread().isInterrupted()) {
-      this.has_work = false;
-      int ballot = this.server_state.getCurrentBallot();
-      if (ballot != this.active_ballot) {
-        this.active_ballot = ballot;
-        this.prepared_ballot = -1;
-        this.fast_active = false;
-        this.any_from = -1;
-        this.any_sent = false;
-        this.any_retry_after = 0;
-        this.prepare_collector = null;
-        this.any_collector = null;
-        this.prepare_processor = null;
-        this.prepare_retry_after = 0;
-        this.prepared_values.clear();
-        this.transfer_remaining.clear();
-        this.in_flight.clear();
-        this.retry_after.clear();
-        this.fast_placed.clear();
-      }
+    this.retry_timer =
+        Executors.newSingleThreadScheduledExecutor(
+            task -> {
+              Thread timer = new Thread(task, "paxos-retry");
+              timer.setDaemon(true);
+              return timer;
+            });
+    try {
+      while (!Thread.currentThread().isInterrupted()) {
+        this.has_work = false;
+        int ballot = this.server_state.getCurrentBallot();
+        if (ballot != this.active_ballot) {
+          this.active_ballot = ballot;
+          this.prepared_ballot = -1;
+          this.fast_active = false;
+          this.any_from = -1;
+          this.any_sent = false;
+          this.any_retry_after = 0;
+          this.prepare_collector = null;
+          this.any_collector = null;
+          this.prepare_processor = null;
+          this.prepare_retry_after = 0;
+          this.prepared_values.clear();
+          this.transfer_remaining.clear();
+          this.in_flight.clear();
+          this.retry_after.clear();
+          this.fast_placed.clear();
+        }
 
-      finishAny(ballot);
-      finishPrepare(ballot);
-      finishProposals(ballot);
-      executeReadyEntries();
-      if (ballot != this.server_state.getCurrentBallot()) continue;
+        finishAny(ballot);
+        finishPrepare(ballot);
+        finishProposals(ballot);
+        executeReadyEntries();
+        if (ballot != this.server_state.getCurrentBallot()) continue;
 
-      fastAccept(ballot);
+        fastAccept(ballot);
 
-      if (ballot >= 0 && this.server_state.scheduler.leader(ballot) == this.server_state.my_id) {
-        if (this.prepared_ballot == ballot) {
-          if (!this.server_state.canProposeNewRequests(ballot)) {
-            transferHistory(ballot);
-          } else {
-            if (!any_sent && this.fast_active && System.nanoTime() >= this.any_retry_after)
-              startAny(ballot);
-            proposeAvailable(ballot);
+        if (ballot >= 0 && this.server_state.scheduler.leader(ballot) == this.server_state.my_id) {
+          if (this.prepared_ballot == ballot) {
+            if (!this.server_state.canProposeNewRequests(ballot)) {
+              transferHistory(ballot);
+            } else {
+              if (!any_sent && this.fast_active && System.nanoTime() >= this.any_retry_after)
+                startAny(ballot);
+              proposeAvailable(ballot);
+            }
+          } else if (this.prepare_collector == null
+              && System.nanoTime() >= this.prepare_retry_after
+              && (ballot > 0
+                  || this.server_state.req_history.getFirstPending() != null
+                  || this.server_state.scheduler.fastpaxos(ballot))) {
+            startPrepare(ballot);
           }
-        } else if (this.prepare_collector == null
-            && System.nanoTime() >= this.prepare_retry_after
-            && (ballot > 0
-                || this.server_state.req_history.getFirstPending() != null
-                || this.server_state.scheduler.fastpaxos(ballot))) {
-          startPrepare(ballot);
+        }
+        if (!this.has_work) {
+          try {
+            wait();
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
         }
       }
-      if (!this.has_work) {
-        try {
-          // Also retry failed RPC rounds and observe promises advanced by inbound RPCs.
-          wait(250);
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-        }
-      }
+    } finally {
+      this.retry_timer.shutdownNow();
     }
+  }
+
+  private long retryLater() {
+    // Wake when the retry is due, even if no new request or RPC response arrives.
+    long retry_at = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(RETRY_AFTER_FAIL_TIME);
+    this.retry_timer.schedule(this::wakeup, RETRY_AFTER_FAIL_TIME, TimeUnit.MILLISECONDS);
+    return retry_at;
   }
 
   private <T> CollectorStreamObserver<T> observer(GenericResponseCollector<T> collector) {
@@ -179,7 +200,7 @@ public class MainLoop implements Runnable {
               && this.server_state.req_history.getIfExists(entry.getValue()) == null) {
             this.prepare_collector = null;
             this.prepare_processor = null;
-            this.prepare_retry_after = System.nanoTime() + RETRY_NANOS;
+            this.prepare_retry_after = retryLater();
             return;
           }
         }
@@ -210,7 +231,7 @@ public class MainLoop implements Runnable {
     }
     this.prepare_collector = null;
     this.prepare_processor = null;
-    this.prepare_retry_after = System.nanoTime() + RETRY_NANOS;
+    if (!accepted) this.prepare_retry_after = retryLater();
   }
 
   private void finishProposals(int ballot) {
@@ -238,7 +259,7 @@ public class MainLoop implements Runnable {
         }
       } else {
         this.server_state.setCurrentBallot(proposal.processor().getMaxballot());
-        this.retry_after.put(slot, System.nanoTime() + RETRY_NANOS);
+        this.retry_after.put(slot, retryLater());
       }
     }
   }
@@ -246,6 +267,8 @@ public class MainLoop implements Runnable {
   private void transferHistory(int ballot) {
     if (this.transfer_remaining.isEmpty()) {
       this.server_state.finishPreparation(ballot);
+      // Automatic recovery may activate here, without a later console RPC.
+      if (this.server_state.canProposeNewRequests(ballot)) wakeup();
       return;
     }
     for (var item : this.transfer_remaining.entrySet()) {
@@ -341,7 +364,7 @@ public class MainLoop implements Runnable {
     // in case 'any' message didn't reach all replicas, we retry after a timeout
     if (max_seen == -1 && accepted_count < this.server_state.scheduler.acceptors(ballot).size()) {
       this.any_sent = false;
-      this.any_retry_after = System.nanoTime() + RETRY_NANOS;
+      this.any_retry_after = retryLater();
     }
 
     this.any_collector = null;

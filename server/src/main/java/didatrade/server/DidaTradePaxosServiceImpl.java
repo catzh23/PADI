@@ -63,6 +63,9 @@ public class DidaTradePaxosServiceImpl
       response = response_builder.build();
     }
 
+    // Wake outside the state lock: the loop acquires that lock while running.
+    this.server_state.main_loop.wakeup();
+
     // System.out.println("Sending phase1 response: " + response);
 
     responseObserver.onNext(response);
@@ -96,6 +99,8 @@ public class DidaTradePaxosServiceImpl
         this.server_state.setCurrentBallot(ballot);
       } else maxballot = this.server_state.getCurrentBallot();
     }
+
+    this.server_state.main_loop.wakeup();
 
     DidaTradePaxos.PhaseTwoReply.Builder response_builder =
         DidaTradePaxos.PhaseTwoReply.newBuilder();

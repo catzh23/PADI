@@ -38,6 +38,7 @@ public class PipelineChecks {
     int failSlot = -1;
     int promised;
     int prepares;
+    boolean failPrepare;
 
     Peer(int id) { this.id = id; }
 
@@ -49,6 +50,10 @@ public class PipelineChecks {
     @Override
     public synchronized void phaseone(PhaseOneRequest request, StreamObserver<PhaseOneReply> out) {
       prepares++;
+      if (failPrepare) {
+        out.onError(Status.UNAVAILABLE.asRuntimeException());
+        return;
+      }
       boolean ok = request.getRequestballot() >= promised;
       if (ok) promised = request.getRequestballot();
       var reply = PhaseOneReply.newBuilder().setServerid(id).setAccepted(ok)
@@ -91,6 +96,7 @@ public class PipelineChecks {
     }
     synchronized List<PhaseTwoRequest> requests() { return List.copyOf(requests); }
     synchronized int prepares() { return prepares; }
+    synchronized void failPrepare(boolean fail) { failPrepare = fail; }
   }
 
   static class Cluster implements AutoCloseable {
@@ -205,6 +211,7 @@ public class PipelineChecks {
 
   public static void main(String[] args) {
     try {
+      wakeupsAndPrepareRetry();
       orderingAndBallots();
       boundedWindow();
     } catch (Throwable error) {
@@ -213,5 +220,46 @@ public class PipelineChecks {
     }
     System.out.println("Failed checks: " + failures);
     System.exit(failures == 0 ? 0 : 1);
+  }
+
+  static <T> StreamObserver<T> ignoreReply() {
+    return new StreamObserver<>() {
+      public void onNext(T reply) {}
+      public void onCompleted() {}
+      public void onError(Throwable error) { throw new RuntimeException(error); }
+    };
+  }
+
+  static void wakeupsAndPrepareRetry() throws Exception {
+    try (var c = new Cluster()) {
+      check("idle loop waits without a polling timeout",
+          await(() -> c.state.main_loop_worker.getState() == Thread.State.WAITING));
+      c.pending(101, new DidaTradeCommand(DidaTradeAction.BALANCE, 0));
+      c.peers.get(1).failPrepare(true);
+      c.peers.get(2).failPrepare(true);
+      // No explicit wakeup: the incoming prepare must notify the loop.
+      new DidaTradePaxosServiceImpl(c.state).phaseone(
+          PhaseOneRequest.newBuilder().setRequestballot(4).build(), ignoreReply());
+      check("incoming prepare wakes the loop; failed prepare retries without new traffic",
+          await(() -> c.peers.stream().allMatch(p -> p.prepares() >= 2)) && !c.processed(101));
+      c.peers.get(1).failPrepare(false);
+      c.peers.get(2).failPrepare(false);
+      check("prepare recovery completes without an external wakeup", await(() -> c.processed(101)));
+    }
+    try (var c = new Cluster()) {
+      synchronized (c.state) {
+        var entry = c.state.paxos_log.testAndSetEntry(0);
+        entry.command_id = 201;
+        entry.decided = true;
+      }
+      c.state.main_loop.wakeup();
+      check("learner waits for the missing command body",
+          await(() -> c.state.main_loop_worker.getState() == Thread.State.WAITING));
+      var command = new DidaTradeCommand(DidaTradeAction.SELL, 0, 50);
+      // Mock peers do not send learns; phase 2 itself must wake this learner.
+      new DidaTradePaxosServiceImpl(c.state).phasetwo(
+          PhaseTwoRequest.newBuilder().setValue(201).setCommand(command.toMessage()).build(), ignoreReply());
+      check("incoming phase 2 body wakes execution", await(() -> c.processed(201)));
+    }
   }
 }
