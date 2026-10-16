@@ -314,11 +314,19 @@ scenario_fast() {
   for req in 101 201 301; do wait_exec_on "$req" 45 "${ALL[@]}"; done
 
   step 3 'Check the fast path was used.'
-  for id in "${ALL[@]}"; do
-    for req in 101 201 301; do
-      (($(count "s$id" "Fast accepted request $req in slot [0-9]+ in ballot 0") == 1)) \
-        || fail "S$id did not fast-accept $req exactly once in ballot 0"
+  # Every request needs fast votes from a super-majority (4 of 5). An acceptor that learns a
+  # request is already decided before the client's copy reaches it rightly skips it.
+  local votes
+  for req in 101 201 301; do
+    votes=0
+    for id in "${ALL[@]}"; do
+      n=$(count "s$id" "Fast accepted request $req in slot [0-9]+ in ballot 0")
+      ((n <= 1)) || fail "S$id voted for $req more than once in ballot 0"
+      votes=$((votes + n))
     done
+    ((votes >= 4)) || fail "$req got $votes fast votes, below the super-majority"
+  done
+  for id in "${ALL[@]}"; do
     (($(count "s$id" 'Sending phase 2') == 0)) || fail "S$id sent a classic phase 2"
     (($(count "s$id" 'Collision detected') == 0)) || fail "S$id saw a collision in a sequential run"
   done

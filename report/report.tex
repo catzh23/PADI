@@ -108,7 +108,46 @@ loop's lock order. Automatic activation also makes the loop continue.
 
 \section{Step 3: Fast Paxos}
 \label{sec:step3}
-\TODO{C\'atia: implementation and validation of Fast Paxos.}
+
+\paragraph{Quorums.} Each schedule defines a classic quorum, a
+super-majority and a recovery quorum: 3/4/2 in Schedule~B (5 acceptors)
+and 2/3/2 in Schedule~A (3 acceptors). Phase~1 waits for a classic
+quorum, so a value decided by a super-majority appears in at least
+$\textit{quorum} - f'$ replies, with $f' = N - \textit{super-majority}$;
+that is the recovery quorum. This holds because $f' < N/4$ in both
+schedules.
+
+\paragraph{Fast path.} After phase~1 of a fast ballot $b$, the leader
+re-proposes the recovered slots with classic phase~2 and sends
+\code{any(b, k)}, where $k$ is the slot after the highest recovered one.
+It resends \code{any} until every acceptor confirms it: one acceptor
+without \code{any} blocks every fast decision. Acceptors store
+\code{any\_ballot} and \code{any\_from}, place each pending client
+request in their next free slot $\geq k$, and send \code{learn(fast)}
+directly to the learners.
+
+\paragraph{Slot assignment.} Acceptors only agree if they place requests
+in the same slots. Each acceptor keeps \code{fast\_placed}, a map from a
+request to the slot where it voted for it in $b$. An entry is added on
+every fast vote, so a request is not voted twice while its slot is open.
+It is removed when that slot is decided with another request, so the
+request can be placed again. The map is cleared when the ballot changes.
+Two further rules keep acceptors aligned: requests already decided but
+not yet executed are never voted again, and an acceptor starts voting
+only after executing every slot below \code{any\_from}.
+
+\paragraph{Learners.} For each slot a learner keeps, for the ballot it
+is counting, a map from each value to the set of acceptors that voted
+for it; votes from older ballots are ignored. Fast votes need a
+super-majority, classic votes a classic quorum. When even the most voted
+value cannot reach the super-majority with the acceptors that have not
+voted yet, the slot has collided and the learner moves to $b+1$, whose
+leader recovers it.
+
+\paragraph{Recovery.} Phase~1 counts, per slot, the votes at the highest
+ballot $j$. A value with at least the recovery quorum may have been
+decided and is adopted; otherwise any value from $j$ is. A slot proposed
+classically in $j$ has a single value, so no fast/classic flag is needed.
 
 \section{Step 4: Causally Ordered Balance}
 \label{sec:step4}
@@ -211,6 +250,17 @@ cover old callbacks, the window bound, stable retry values, untimed waiting
 and retries without new traffic. The debug test switches to classic ballot~1
 before crashing a replica: two survivors suffice there, but not in
 Schedule~A's Fast ballot~0.
+
+\paragraph{Fast Paxos.}
+\code{validation/step3/fast\_paxos.sh} runs twelve Schedule~B scenarios
+on five replicas: the fast path; the super-majority boundary (with one
+replica frozen the remaining four fast votes decide, with two frozen the
+three votes neither decide nor count as a collision); collisions under
+slow mode; fast/classic transitions; crash, freeze and rejoin; a frozen
+leader; ballot changes under load; a dead next leader recovered from the
+console; and a stress run. Each ends by checking that all live replicas
+executed the same requests in the same order, none twice, and print the
+same final state.
 
 \paragraph{Causal balance.}
 \code{validation/step4/run.py} checks reads without log entries, reads while
